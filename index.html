@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>flyman — 遠端送出路線</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e9ef; --mut:#9aa3b2;
+          --blue:#2f7bff; --green:#2fbf6b; --red:#e5484d; --r:12px; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.5 -apple-system,"PingFang TC","Helvetica Neue",sans-serif; padding:14px; }
+  h1 { font-size:17px; margin:2px 0 12px; font-weight:700; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tabs button { flex:1; padding:9px; border:1px solid var(--line); background:var(--card);
+                 color:var(--mut); border-radius:var(--r); font-weight:600; }
+  .tabs button.on { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+          padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
+  input, textarea { width:100%; padding:10px; border:1px solid var(--line); border-radius:10px;
+                    background:#12151b; color:var(--fg); font-size:15px; font-family:inherit; }
+  textarea { min-height:120px; resize:vertical; font:13px/1.4 ui-monospace,Menlo,monospace; }
+  button.act { width:100%; padding:12px; border:none; border-radius:10px; color:#fff;
+               font-size:15px; font-weight:700; margin-top:12px; }
+  button.act:disabled { opacity:.4; }
+  .parse { background:#39414f; } .send { background:var(--green); }
+  .save { background:var(--blue); }
+  #map { height:220px; border-radius:10px; margin-top:12px; display:none; }
+  .status { margin-top:10px; font-size:13px; min-height:18px; }
+  .ok { color:var(--green); } .err { color:var(--red); } .mut { color:var(--mut); }
+  .hide { display:none; }
+  .hint { font-size:12px; color:var(--mut); margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>📡 flyman 遠端送出路線</h1>
+
+<div class="tabs">
+  <button id="tab-send" class="on" onclick="showTab('send')">送出路線</button>
+  <button id="tab-cfg" onclick="showTab('cfg')">⚙ 設定</button>
+</div>
+
+<!-- SEND -->
+<div id="pane-send">
+  <div class="card">
+    <label>名稱（可留空）</label>
+    <input id="name" placeholder="例如：台北公園路線" autocomplete="off">
+    <label>貼上座標 / GPX / GeoJSON</label>
+    <textarea id="raw" placeholder="25.0330, 121.5654&#10;25.0340, 121.5660&#10;…"></textarea>
+    <button class="act parse" onclick="doParse()">🔍 解析並預覽</button>
+    <div id="parseStatus" class="status mut"></div>
+    <div id="map"></div>
+    <button id="sendBtn" class="act send" disabled onclick="doSend()">送出到 flyman</button>
+    <div id="sendStatus" class="status"></div>
+    <div class="hint">送出後 Mac 上的 flyman 會在約 10 秒內把路線接到目前的路線後面。
+      若正在冷卻中會被拒絕，請等冷卻結束再送。</div>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div id="pane-cfg" class="hide">
+  <div class="card">
+    <label>Supabase URL</label>
+    <input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off">
+    <label>Anon Key（公開金鑰）</label>
+    <input id="cfgKey" placeholder="eyJhbGciOi…" autocomplete="off">
+    <label>PIN（與 Mac 的 FLYMAN_INBOX_PIN 相同）</label>
+    <input id="cfgPin" type="password" placeholder="••••••••••••••••" autocomplete="off">
+    <button class="act save" onclick="saveCfg()">💾 儲存設定</button>
+    <div id="cfgStatus" class="status"></div>
+    <div class="hint">只存在這支手機（localStorage）。Anon key 是公開設計；真正的守門是 PIN。</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const ls = (k, v) => (v === undefined ? (localStorage.getItem(k) || "") : localStorage.setItem(k, v));
+
+let map = null, layer = null, parsedPts = null, rawText = "";
+
+function showTab(which) {
+  const send = which === "send";
+  $("pane-send").classList.toggle("hide", !send);
+  $("pane-cfg").classList.toggle("hide", send);
+  $("tab-send").classList.toggle("on", send);
+  $("tab-cfg").classList.toggle("on", !send);
+  if (send && map) setTimeout(() => map.invalidateSize(), 50);
+}
+
+// --- config ---
+function loadCfg() { $("cfgUrl").value = ls("flyman_sb_url"); $("cfgKey").value = ls("flyman_sb_key"); $("cfgPin").value = ls("flyman_inbox_pin"); }
+function saveCfg() {
+  ls("flyman_sb_url", $("cfgUrl").value.trim().replace(/\/+$/, ""));
+  ls("flyman_sb_key", $("cfgKey").value.trim());
+  ls("flyman_inbox_pin", $("cfgPin").value.trim());
+  const s = $("cfgStatus"); s.textContent = "✅ 已儲存"; s.className = "status ok";
+  setTimeout(() => (s.textContent = ""), 2000);
+}
+
+// --- parsing (mirrors flyman.routes_io: GeoJSON [lng,lat], GPX, loose lat,lng) ---
+function extractGeoJson(g) {
+  const out = [];
+  const walk = (geom) => {
+    if (!geom) return;
+    if (geom.type === "LineString") geom.coordinates.forEach(c => out.push([c[1], c[0]]));
+    else if (geom.type === "MultiLineString") geom.coordinates.forEach(l => l.forEach(c => out.push([c[1], c[0]])));
+    else if (geom.type === "Point") out.push([geom.coordinates[1], geom.coordinates[0]]);
+  };
+  if (g.type === "FeatureCollection") g.features.forEach(f => walk(f.geometry));
+  else if (g.type === "Feature") walk(g.geometry);
+  else walk(g);
+  return out;
+}
+function parseRoute(text) {
+  const t = text.trim();
+  if (!t) return [];
+  // GeoJSON
+  if (t[0] === "{" || t[0] === "[") {
+    try { const pts = extractGeoJson(JSON.parse(t)); if (pts.length) return pts; } catch (_) {}
+  }
+  // GPX
+  if (t.includes("<gpx") || t.includes("<trkpt") || t.includes("<rtept") || t.includes("<wpt")) {
+    try {
+      const doc = new DOMParser().parseFromString(t, "text/xml");
+      const pts = [...doc.querySelectorAll("trkpt,rtept,wpt")].map(n =>
+        [parseFloat(n.getAttribute("lat")), parseFloat(n.getAttribute("lon"))]);
+      const ok = pts.filter(([a, b]) => isFinite(a) && isFinite(b) && Math.abs(a) <= 90 && Math.abs(b) <= 180);
+      if (ok.length) return ok;
+    } catch (_) {}
+  }
+  // Loose "lat, lng" pairs
+  const re = /(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)/g;
+  const out = []; let m;
+  while ((m = re.exec(t)) !== null) {
+    const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+    if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) out.push([lat, lng]);
+  }
+  return out;
+}
+
+function doParse() {
+  rawText = $("raw").value;
+  const pts = parseRoute(rawText);
+  const ps = $("parseStatus");
+  if (pts.length < 2) {
+    parsedPts = null; $("sendBtn").disabled = true; $("map").style.display = "none";
+    ps.textContent = pts.length === 1 ? "只解析到 1 個點，至少需要 2 個" : "❌ 找不到有效座標";
+    ps.className = "status err";
+    return;
+  }
+  parsedPts = pts;
+  ps.textContent = `✅ 解析到 ${pts.length} 個座標點`; ps.className = "status ok";
+  $("map").style.display = "block";
+  if (!map) map = L.map("map", { attributionControl: false }).setView(pts[0], 15);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+  if (layer) map.removeLayer(layer);
+  layer = L.layerGroup([
+    L.polyline(pts, { color: "#2f7bff", weight: 4 }),
+    L.circleMarker(pts[0], { radius: 6, color: "#2fbf6b" }),
+    L.circleMarker(pts[pts.length - 1], { radius: 6, color: "#e5484d" }),
+  ]).addTo(map);
+  setTimeout(() => { map.invalidateSize(); map.fitBounds(L.polyline(pts).getBounds(), { padding: [24, 24] }); }, 60);
+  $("sendBtn").disabled = false;
+}
+
+async function doSend() {
+  const url = ls("flyman_sb_url"), key = ls("flyman_sb_key"), pin = ls("flyman_inbox_pin");
+  const s = $("sendStatus");
+  if (!url || !key || !pin) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / PIN"; s.className = "status err"; return; }
+  if (!parsedPts) { s.textContent = "請先解析路線"; s.className = "status err"; return; }
+  const btn = $("sendBtn"); btn.disabled = true;
+  s.textContent = "送出中…"; s.className = "status mut";
+  try {
+    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ source: "phone", status: "apply", raw_text: rawText, name: $("name").value.trim(), secret: pin }),
+    });
+    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會接上路線"; s.className = "status ok";
+    setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+    btn.disabled = false;
+  }
+}
+
+loadCfg();
+if (!ls("flyman_sb_url")) showTab("cfg");  // first run → settings
+</script>
+</body>
+</html>
