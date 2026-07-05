@@ -102,19 +102,47 @@ let map = null, layer = null, parsedPts = null, rawText = "";
 
 // 花農 palette — MUST mirror src/flyman/static/shared_lists.js (this static page
 // can't import it). COLOR_LABEL_MAP mirrors history.js.
-const COLOURS = [["white", "白"], ["yellow", "黃"], ["blue", "藍"], ["red", "紅"], ["random", "隨機"]];
-const COLOR_LABEL = { white: "白", yellow: "黃", blue: "藍", red: "紅", random: "混色" };
-const FLOWERS = [
-  "", "鬱金香", "玫瑰", "三色堇", "雞冠花", "彼岸花", "風信子", "小蒼蘭",
-  "嘉德麗雅蘭", "牡丹", "櫻草花", "聖誕紅", "雪花蓮", "海芋", "銀蓮花",
-  "菊花", "鐵線蓮", "鼠尾草", "勿忘草", "風鈴草", "矮牽牛", "九重葛",
-  "水仙花", "鈴蘭", "鸚鵡鬱金香", "山茶花", "牽牛花", "繡球花", "豌豆花",
-  "向日葵", "聖誕玫瑰", "櫻花", "天堂鳥", "石竹", "蝴蝶蘭", "大波斯菊",
-  "兔耳花", "鳶尾花", "油菜花", "康乃馨", "大理花", "龍膽",
+let COLOURS = [["white", "白"], ["yellow", "黃"], ["blue", "藍"], ["red", "紅"], ["random", "混色"]];
+let COLOR_LABEL = { white: "白", yellow: "黃", blue: "藍", red: "紅", random: "混色" };
+let FLOWERS = [
+    "","鬱金香", "玫瑰", "三色堇", "雞冠花", "彼岸花", "風信子", "小蒼蘭",
+    "嘉德麗雅蘭", "牡丹", "櫻草花", "聖誕紅", "雪花蓮", "海芋", "銀蓮花",
+    "菊花", "鐵線蓮", "鼠尾草", "勿忘草", "風鈴草", "矮牽牛", "九重葛",
+    "水仙花", "鈴蘭", "鸚鵡鬱金香", "山茶花", "牽牛花", "繡球花", "豌豆花",
+    "向日葵", "聖誕玫瑰", "櫻花", "天堂鳥", "石竹", "蝴蝶蘭", "大波斯菊",
+    "兔耳花", "鳶尾花", "油菜花", "康乃馨", "大理花", "龍膽", "扶桑花", "曇花"
 ];
+// ADR-033: per-device most-recently-used flower ordering.
+function flowerMru() { try { const a = JSON.parse(localStorage.getItem("flyman_flower_mru") || "[]"); return Array.isArray(a) ? a : []; } catch (_) { return []; } }
+function pushFlowerMru(name) { if (!name) return; const m = [name, ...flowerMru().filter((f) => f !== name)].slice(0, 80); try { localStorage.setItem("flyman_flower_mru", JSON.stringify(m)); } catch (_) {} }
+
 function fillPalette() {
   $("colour").innerHTML = COLOURS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
-  $("flower").innerHTML = FLOWERS.map((f) => `<option value="${f}">${f || "（不設定花名）"}</option>`).join("");
+  // Keep the "" (不設定) placeholder first, then MRU flowers, then the rest.
+  const real = FLOWERS.filter((f) => f);
+  const mru = flowerMru().filter((f) => real.includes(f));
+  const ordered = [""].concat(mru, real.filter((f) => !mru.includes(f)));
+  $("flower").innerHTML = ordered.map((f) => `<option value="${f}">${f || "（不設定花名）"}</option>`).join("");
+}
+
+// ADR-033: fetch the live palette from Supabase (anon read); refill on success,
+// keep the baked-in fallback otherwise.
+async function loadPalette() {
+  const url = ls("flyman_sb_url"), key = ls("flyman_sb_key");
+  if (!url || !key) return;
+  try {
+    const r = await fetch(`${url}/rest/v1/flower_palette?id=eq.1&select=flowers,colours`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` } });
+    if (!r.ok) return;
+    const rows = await r.json();
+    const row = Array.isArray(rows) && rows[0];
+    if (row && Array.isArray(row.flowers) && row.flowers.length && Array.isArray(row.colours) && row.colours.length) {
+      FLOWERS = [""].concat(row.flowers);
+      COLOURS = row.colours.map((c) => [c.key, c.label]);
+      COLOR_LABEL = Object.fromEntries(row.colours.map((c) => [c.key, c.label]));
+      fillPalette();
+    }
+  } catch (_) { /* keep the baked-in fallback */ }
 }
 
 // Clear the paste box; reset any prior parse/preview.
@@ -146,6 +174,7 @@ function saveCfg() {
   ls("flyman_sb_key", $("cfgKey").value.trim());
   ls("flyman_inbox_pin", $("cfgPin").value.trim());
   ls("flyman_inbox_user", $("cfgUser").value.trim());
+  loadPalette();  // ADR-033: pick up the live palette now that creds are set
   const s = $("cfgStatus"); s.textContent = "✅ 已儲存"; s.className = "status ok";
   setTimeout(() => (s.textContent = ""), 2000);
 }
@@ -237,6 +266,7 @@ async function doSend() {
     });
     if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
     s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會加入佇列"; s.className = "status ok";
+    pushFlowerMru(flower); fillPalette();  // ADR-033: MRU bubble-up
     setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
   } catch (err) {
     s.textContent = "❌ " + err.message; s.className = "status err";
@@ -269,6 +299,7 @@ async function doStop() {
 
 loadCfg();
 fillPalette();
+loadPalette();  // ADR-033: refresh from Supabase if creds are set
 if (!ls("flyman_sb_url") || !ls("flyman_inbox_user")) showTab("cfg");  // first run → settings
 </script>
 </body>
