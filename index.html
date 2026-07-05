@@ -30,6 +30,10 @@
   .raw-tools { display:flex; gap:8px; margin-top:8px; }
   .raw-tools .mini { flex:1; padding:8px; border:1px solid var(--line); border-radius:10px;
                      background:#12151b; color:var(--fg); font-size:13px; font-weight:600; }
+  .fp-row { display:flex; gap:8px; }
+  .fp-row select { flex:1; padding:10px; border:1px solid var(--line); border-radius:10px;
+                   background:#12151b; color:var(--fg); font-size:15px; }
+  .stop { background:var(--red); }
   #map { height:220px; border-radius:10px; margin-top:12px; display:none; }
   .status { margin-top:10px; font-size:13px; min-height:18px; }
   .ok { color:var(--green); } .err { color:var(--red); } .mut { color:var(--mut); }
@@ -48,21 +52,26 @@
 <!-- SEND -->
 <div id="pane-send">
   <div class="card">
-    <label>名稱（可留空）</label>
-    <input id="name" placeholder="例如：台北公園路線" autocomplete="off">
+    <label>花名 + 顏色（選填，會標在花田紀錄上）</label>
+    <div class="fp-row">
+      <select id="colour"></select>
+      <select id="flower"></select>
+    </div>
     <label>貼上座標 / GPX / GeoJSON</label>
     <textarea id="raw" placeholder="25.0330, 121.5654&#10;25.0340, 121.5660&#10;…"></textarea>
     <div class="raw-tools">
-      <button type="button" class="mini" onclick="pasteRaw()">📋 貼上</button>
-      <button type="button" class="mini" onclick="clearRaw()">✕ 清除</button>
+      <button type="button" class="mini" onclick="clearRaw()">✕ 清除文字</button>
     </div>
+    <p class="hint" style="margin-top:6px">在上方文字框長按即可貼上座標。</p>
     <button class="act parse" onclick="doParse()">🔍 解析並預覽</button>
     <div id="parseStatus" class="status mut"></div>
     <div id="map"></div>
     <button id="sendBtn" class="act send" disabled onclick="doSend()">送出到 flyman</button>
     <div id="sendStatus" class="status"></div>
-    <div class="hint">送出後 Mac 上的 flyman 會在約 10 秒內把路線接到目前的路線後面。
-      若正在冷卻中會被拒絕，請等冷卻結束再送。</div>
+    <div class="hint">送出後 Mac 上的 flyman 會在約 10 秒內把路線加入佇列（逐一走完一圈）。</div>
+    <button class="act stop" onclick="doStop()">🛑 停止目前路線（恢復真實 GPS）</button>
+    <div id="stopStatus" class="status"></div>
+    <div class="hint">停止會取消整個佇列並讓手機恢復真實定位。</div>
   </div>
 </div>
 
@@ -73,11 +82,13 @@
     <input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off">
     <label>Anon Key（公開金鑰）</label>
     <input id="cfgKey" placeholder="eyJhbGciOi…" autocomplete="off">
-    <label>PIN（與 Mac 的 FLYMAN_INBOX_PIN 相同）</label>
-    <input id="cfgPin" type="password" placeholder="••••••••••••••••" autocomplete="off">
+    <label>使用者名稱（必填，與 Mac 的 FLYMAN_INBOX_USER 相同）</label>
+    <input id="cfgUser" placeholder="例如：zen" autocomplete="off">
+    <label>代碼（6 位數，與 Mac 的 FLYMAN_INBOX_PIN 相同）</label>
+    <input id="cfgPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off">
     <button class="act save" onclick="saveCfg()">💾 儲存設定</button>
     <div id="cfgStatus" class="status"></div>
-    <div class="hint">只存在這支手機（localStorage）。Anon key 是公開設計；真正的守門是 PIN。</div>
+    <div class="hint">只存在這支手機（localStorage）。Anon key 是公開設計；守門的是代碼。使用者名稱決定路線送到哪一台 Mac。</div>
   </div>
 </div>
 
@@ -89,6 +100,23 @@ const ls = (k, v) => (v === undefined ? (localStorage.getItem(k) || "") : localS
 
 let map = null, layer = null, parsedPts = null, rawText = "";
 
+// 花農 palette — MUST mirror src/flyman/static/shared_lists.js (this static page
+// can't import it). COLOR_LABEL_MAP mirrors history.js.
+const COLOURS = [["white", "白"], ["yellow", "黃"], ["blue", "藍"], ["red", "紅"], ["random", "隨機"]];
+const COLOR_LABEL = { white: "白", yellow: "黃", blue: "藍", red: "紅", random: "混色" };
+const FLOWERS = [
+  "", "鬱金香", "玫瑰", "三色堇", "雞冠花", "彼岸花", "風信子", "小蒼蘭",
+  "嘉德麗雅蘭", "牡丹", "櫻草花", "聖誕紅", "雪花蓮", "海芋", "銀蓮花",
+  "菊花", "鐵線蓮", "鼠尾草", "勿忘草", "風鈴草", "矮牽牛", "九重葛",
+  "水仙花", "鈴蘭", "鸚鵡鬱金香", "山茶花", "牽牛花", "繡球花", "豌豆花",
+  "向日葵", "聖誕玫瑰", "櫻花", "天堂鳥", "石竹", "蝴蝶蘭", "大波斯菊",
+  "兔耳花", "鳶尾花", "油菜花", "康乃馨", "大理花", "龍膽",
+];
+function fillPalette() {
+  $("colour").innerHTML = COLOURS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+  $("flower").innerHTML = FLOWERS.map((f) => `<option value="${f}">${f || "（不設定花名）"}</option>`).join("");
+}
+
 // Clear the paste box; reset any prior parse/preview.
 function clearRaw() {
   $("raw").value = "";
@@ -96,18 +124,7 @@ function clearRaw() {
   $("sendBtn").disabled = true;
   $("map").style.display = "none";
   $("parseStatus").textContent = "";
-  $("raw").focus();
-}
-
-// Paste from the clipboard (needs https + a user gesture; silently no-ops if blocked).
-async function pasteRaw() {
-  try {
-    const t = await navigator.clipboard.readText();
-    if (t) $("raw").value = t;
-  } catch (_) {
-    const s = $("parseStatus");
-    s.textContent = "無法讀取剪貼簿，請長按貼上"; s.className = "status err";
-  }
+  // Note: no .focus() here — avoids popping the iOS keyboard unexpectedly after clear.
 }
 
 function showTab(which) {
@@ -120,11 +137,15 @@ function showTab(which) {
 }
 
 // --- config ---
-function loadCfg() { $("cfgUrl").value = ls("flyman_sb_url"); $("cfgKey").value = ls("flyman_sb_key"); $("cfgPin").value = ls("flyman_inbox_pin"); }
+function loadCfg() {
+  $("cfgUrl").value = ls("flyman_sb_url"); $("cfgKey").value = ls("flyman_sb_key");
+  $("cfgPin").value = ls("flyman_inbox_pin"); $("cfgUser").value = ls("flyman_inbox_user");
+}
 function saveCfg() {
   ls("flyman_sb_url", $("cfgUrl").value.trim().replace(/\/+$/, ""));
   ls("flyman_sb_key", $("cfgKey").value.trim());
   ls("flyman_inbox_pin", $("cfgPin").value.trim());
+  ls("flyman_inbox_user", $("cfgUser").value.trim());
   const s = $("cfgStatus"); s.textContent = "✅ 已儲存"; s.className = "status ok";
   setTimeout(() => (s.textContent = ""), 2000);
 }
@@ -195,21 +216,27 @@ function doParse() {
   $("sendBtn").disabled = false;
 }
 
+function _cfg() {
+  return { url: ls("flyman_sb_url"), key: ls("flyman_sb_key"), pin: ls("flyman_inbox_pin"), user: ls("flyman_inbox_user") };
+}
+
 async function doSend() {
-  const url = ls("flyman_sb_url"), key = ls("flyman_sb_key"), pin = ls("flyman_inbox_pin");
+  const { url, key, pin, user } = _cfg();
   const s = $("sendStatus");
-  if (!url || !key || !pin) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / PIN"; s.className = "status err"; return; }
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / 代碼 / 使用者名稱"; s.className = "status err"; return; }
   if (!parsedPts) { s.textContent = "請先解析路線"; s.className = "status err"; return; }
+  const flower = $("flower").value, colour = $("colour").value;
+  const name = flower ? ((COLOR_LABEL[colour] || "") + flower) : "手機路線";
   const btn = $("sendBtn"); btn.disabled = true;
   s.textContent = "送出中…"; s.className = "status mut";
   try {
     const resp = await fetch(`${url}/rest/v1/route_inbox`, {
       method: "POST",
       headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({ source: "phone", status: "apply", raw_text: rawText, name: $("name").value.trim(), secret: pin }),
+      body: JSON.stringify({ source: "phone", status: "apply", kind: "route", raw_text: rawText, name, flower, colour, secret: pin, username: user }),
     });
     if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
-    s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會接上路線"; s.className = "status ok";
+    s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會加入佇列"; s.className = "status ok";
     setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
   } catch (err) {
     s.textContent = "❌ " + err.message; s.className = "status err";
@@ -217,8 +244,32 @@ async function doSend() {
   }
 }
 
+// Item 5: send a STOP signal — the matching Mac cancels the queue + restores real GPS.
+let _stopBusy = false;
+async function doStop() {
+  if (_stopBusy) return;
+  const { url, key, pin, user } = _cfg();
+  const s = $("stopStatus");
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入設定"; s.className = "status err"; return; }
+  _stopBusy = true;
+  s.textContent = "送出停止訊號…"; s.className = "status mut";
+  try {
+    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ source: "phone", status: "apply", kind: "stop", raw_text: "", name: "停止", secret: pin, username: user }),
+    });
+    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    s.textContent = "✅ 已送出停止訊號，約 10 秒內恢復真實 GPS"; s.className = "status ok";
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+  }
+  setTimeout(() => { _stopBusy = false; }, 5000);
+}
+
 loadCfg();
-if (!ls("flyman_sb_url")) showTab("cfg");  // first run → settings
+fillPalette();
+if (!ls("flyman_sb_url") || !ls("flyman_inbox_user")) showTab("cfg");  // first run → settings
 </script>
 </body>
 </html>
