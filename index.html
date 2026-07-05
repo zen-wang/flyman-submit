@@ -27,6 +27,9 @@
   button.act:disabled { opacity:.4; }
   .parse { background:#39414f; } .send { background:var(--green); }
   .save { background:var(--blue); }
+  .raw-tools { display:flex; gap:8px; margin-top:8px; }
+  .raw-tools .mini { flex:1; padding:8px; border:1px solid var(--line); border-radius:10px;
+                     background:#12151b; color:var(--fg); font-size:13px; font-weight:600; }
   #map { height:220px; border-radius:10px; margin-top:12px; display:none; }
   .status { margin-top:10px; font-size:13px; min-height:18px; }
   .ok { color:var(--green); } .err { color:var(--red); } .mut { color:var(--mut); }
@@ -49,6 +52,10 @@
     <input id="name" placeholder="例如：台北公園路線" autocomplete="off">
     <label>貼上座標 / GPX / GeoJSON</label>
     <textarea id="raw" placeholder="25.0330, 121.5654&#10;25.0340, 121.5660&#10;…"></textarea>
+    <div class="raw-tools">
+      <button type="button" class="mini" onclick="pasteRaw()">📋 貼上</button>
+      <button type="button" class="mini" onclick="clearRaw()">✕ 清除</button>
+    </div>
     <button class="act parse" onclick="doParse()">🔍 解析並預覽</button>
     <div id="parseStatus" class="status mut"></div>
     <div id="map"></div>
@@ -81,6 +88,27 @@ const $ = (id) => document.getElementById(id);
 const ls = (k, v) => (v === undefined ? (localStorage.getItem(k) || "") : localStorage.setItem(k, v));
 
 let map = null, layer = null, parsedPts = null, rawText = "";
+
+// Clear the paste box; reset any prior parse/preview.
+function clearRaw() {
+  $("raw").value = "";
+  parsedPts = null;
+  $("sendBtn").disabled = true;
+  $("map").style.display = "none";
+  $("parseStatus").textContent = "";
+  $("raw").focus();
+}
+
+// Paste from the clipboard (needs https + a user gesture; silently no-ops if blocked).
+async function pasteRaw() {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t) $("raw").value = t;
+  } catch (_) {
+    const s = $("parseStatus");
+    s.textContent = "無法讀取剪貼簿，請長按貼上"; s.className = "status err";
+  }
+}
 
 function showTab(which) {
   const send = which === "send";
