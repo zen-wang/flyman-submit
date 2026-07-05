@@ -116,13 +116,17 @@ let FLOWERS = [
 function flowerMru() { try { const a = JSON.parse(localStorage.getItem("flyman_flower_mru") || "[]"); return Array.isArray(a) ? a : []; } catch (_) { return []; } }
 function pushFlowerMru(name) { if (!name) return; const m = [name, ...flowerMru().filter((f) => f !== name)].slice(0, 80); try { localStorage.setItem("flyman_flower_mru", JSON.stringify(m)); } catch (_) {} }
 
+// Escape untrusted palette strings — FLOWERS/COLOURS come from a remote Supabase
+// row, so they must be escaped before going into innerHTML (defense-in-depth XSS).
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
 function fillPalette() {
-  $("colour").innerHTML = COLOURS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+  $("colour").innerHTML = COLOURS.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
   // Keep the "" (不設定) placeholder first, then MRU flowers, then the rest.
   const real = FLOWERS.filter((f) => f);
   const mru = flowerMru().filter((f) => real.includes(f));
   const ordered = [""].concat(mru, real.filter((f) => !mru.includes(f)));
-  $("flower").innerHTML = ordered.map((f) => `<option value="${f}">${f || "（不設定花名）"}</option>`).join("");
+  $("flower").innerHTML = ordered.map((f) => `<option value="${esc(f)}">${f ? esc(f) : "（不設定花名）"}</option>`).join("");
 }
 
 // ADR-033: fetch the live palette from Supabase (anon read); refill on success,
