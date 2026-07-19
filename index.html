@@ -39,6 +39,14 @@
   .ok { color:var(--green); } .err { color:var(--red); } .mut { color:var(--mut); }
   .hide { display:none; }
   .hint { font-size:12px; color:var(--mut); margin-top:8px; }
+  .hist-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .hist-row { display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid rgba(128,128,128,.18); }
+  .hist-check { flex:0 0 auto; width:22px; height:22px; accent-color:#2fbf6b; }
+  .hist-info { flex:1; min-width:0; }
+  .hist-name { font-size:15px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hist-coord { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .hist-badge { display:inline-block; font-size:12px; font-weight:500; color:var(--mut); margin-left:4px; }
+  .mini.goto { flex:0 0 auto; background:#2f7bff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:14px; }
 </style>
 </head>
 <body>
@@ -46,6 +54,7 @@
 
 <div class="tabs">
   <button id="tab-send" class="on" onclick="showTab('send')">送出路線</button>
+  <button id="tab-hist" onclick="showTab('hist')">花田歷史</button>
   <button id="tab-cfg" onclick="showTab('cfg')">⚙ 設定</button>
 </div>
 
@@ -72,6 +81,19 @@
     <button class="act stop" onclick="doStop()">🛑 停止目前路線（恢復真實 GPS）</button>
     <div id="stopStatus" class="status"></div>
     <div class="hint">停止會取消整個佇列並讓手機恢復真實定位。</div>
+  </div>
+</div>
+
+<!-- 花田 HISTORY -->
+<div id="pane-hist" class="hide">
+  <div class="card">
+    <div class="hist-head">
+      <label style="margin:0">花田歷史 · 點「傳送」換位置</label>
+      <button type="button" class="mini" onclick="loadHistory()">↻ 重新整理</button>
+    </div>
+    <div id="histStatus" class="status mut"></div>
+    <div id="histList"></div>
+    <div class="hint">Mac 走過的花田地點會自動同步到雲端；點「傳送」就把手機傳送到該地點（受冷卻限制）。</div>
   </div>
 </div>
 
@@ -160,12 +182,12 @@ function clearRaw() {
 }
 
 function showTab(which) {
-  const send = which === "send";
-  $("pane-send").classList.toggle("hide", !send);
-  $("pane-cfg").classList.toggle("hide", send);
-  $("tab-send").classList.toggle("on", send);
-  $("tab-cfg").classList.toggle("on", !send);
-  if (send && map) setTimeout(() => map.invalidateSize(), 50);
+  ["send", "hist", "cfg"].forEach((t) => {
+    $("pane-" + t).classList.toggle("hide", t !== which);
+    $("tab-" + t).classList.toggle("on", t === which);
+  });
+  if (which === "send" && map) setTimeout(() => map.invalidateSize(), 50);
+  if (which === "hist") loadHistory();
 }
 
 // --- config ---
@@ -299,6 +321,95 @@ async function doStop() {
     s.textContent = "❌ " + err.message; s.className = "status err";
   }
   setTimeout(() => { _stopBusy = false; }, 5000);
+}
+
+// --- 花田 history: list the locations the Mac published; tap 傳送 to teleport (換位置) ---
+let _histRows = [];
+async function loadHistory() {
+  const { url, key, user } = _cfg();
+  const s = $("histStatus"), list = $("histList");
+  if (!url || !key || !user) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / 使用者名稱"; s.className = "status err"; list.innerHTML = ""; return; }
+  s.textContent = "載入中…"; s.className = "status mut";
+  try {
+    const q = `${url}/rest/v1/flower_history?username=eq.${encodeURIComponent(user)}&order=record_id.desc&limit=100`;
+    const resp = await fetch(q, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
+    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    _histRows = await resp.json();
+    if (!Array.isArray(_histRows) || !_histRows.length) {
+      s.textContent = "尚無花田歷史（Mac 走過花田後會自動同步）"; s.className = "status mut"; list.innerHTML = ""; return;
+    }
+    s.textContent = ""; s.className = "status mut";
+    list.innerHTML = _histRows.map((r, i) => histRowHtml(r, i)).join("");
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+  }
+}
+
+function histRowHtml(r, i) {
+  const colour = COLOR_LABEL[r.colour] || "";
+  const tag = (r.flower || colour) ? `<span class="hist-badge">${esc(colour + (r.flower || ""))}</span>` : "";
+  const coord = `${(+r.lat).toFixed(5)}, ${(+r.lng).toFixed(5)}`;
+  return `<div class="hist-row">`
+    + `<input type="checkbox" class="hist-check" ${r.checked ? "checked" : ""} onchange="doToggleCheck(${i}, this.checked, this)">`
+    + `<div class="hist-info">`
+    + `<div class="hist-name">${esc(r.name || "花田")}${tag}</div>`
+    + `<div class="hist-coord">${esc(coord)}</div></div>`
+    + `<button type="button" class="mini goto" onclick="doGoto(${i})">傳送</button></div>`;
+}
+
+// Toggle the done-checkbox → push a kind='check' signal; the Mac flips the same
+// record in the app's history (optimistic; revert + re-sync on failure).
+async function doToggleCheck(i, checked, el) {
+  const r = _histRows[i];
+  if (!r) return;
+  const revert = () => { r.checked = !checked; if (el) el.checked = !checked; };
+  const { url, key, pin, user } = _cfg();
+  const s = $("histStatus");
+  if (!url || !key || !pin || !user) { revert(); s.textContent = "請先到「⚙ 設定」填入設定"; s.className = "status err"; return; }
+  r.checked = checked;                 // optimistic (the <input> already flipped)
+  if (el) el.disabled = true;          // guard against overlapping toggles on this row
+  try {
+    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({
+        source: "phone", status: "apply", kind: "check",
+        raw_text: JSON.stringify({ record_id: r.record_id, checked }),
+        name: r.name || "花田", secret: pin, username: user,
+      }),
+    });
+    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 100)}`); }
+    s.textContent = "✅ 已同步"; s.className = "status ok";
+  } catch (err) {
+    revert();   // put the checkbox (DOM + state) back — no full reload to race a retry
+    s.textContent = "❌ 勾選失敗：" + err.message; s.className = "status err";
+  } finally {
+    if (el) el.disabled = false;
+  }
+}
+
+async function doGoto(i) {
+  const r = _histRows[i];
+  if (!r) return;
+  const { url, key, pin, user } = _cfg();
+  const s = $("histStatus");
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入設定"; s.className = "status err"; return; }
+  s.textContent = "送出換位置…"; s.className = "status mut";
+  try {
+    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({
+        source: "phone", status: "apply", kind: "goto",
+        raw_text: `${(+r.lat).toFixed(6)},${(+r.lng).toFixed(6)}`,
+        name: r.name || "花田", secret: pin, username: user,
+      }),
+    });
+    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    s.textContent = `✅ 已送出，約 10 秒內傳送到「${r.name || "花田"}」`; s.className = "status ok";
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+  }
 }
 
 loadCfg();
