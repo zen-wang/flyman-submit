@@ -390,9 +390,16 @@
       <div class="card">
         <label>使用者名稱（選你自己）</label>
         <select id="cfgUser">
+          <!-- IMPORTANT: these values are sent verbatim as `p_username` (console)
+               and `username` (route_inbox rows). They MUST match the KEYS of the
+               Mac's FLYMAN_CONSOLE_PINS env map EXACTLY, including capitalisation
+               — lookup is case-SENSITIVE. A mismatch surfaces as the generic
+               "PIN 不正確" error (the RPC deliberately never reveals whether a
+               username exists), and would also make the Mac silently ignore this
+               user's route submissions. -->
           <option value="">— 請選擇 —</option>
-          <option value="zen">Zen</option>
-          <option value="jerry">Jerry</option>
+          <option value="Zen">Zen</option>
+          <option value="Jerry">Jerry</option>
         </select>
         <label>PIN（6 位數）</label>
         <input id="cfgPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off">
