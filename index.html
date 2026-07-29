@@ -19,7 +19,6 @@
   label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
   input, select { width:100%; padding:10px; border:1px solid var(--line); border-radius:10px;
                     background:#12151b; color:var(--fg); font-size:15px; font-family:inherit; }
-  input[type=range] { padding:0; height:34px; accent-color:var(--blue); }
   button { font-family:inherit; cursor:pointer; }
   button.act { width:100%; padding:12px; border:none; border-radius:10px; color:#fff;
                font-size:15px; font-weight:700; margin-top:12px; }
@@ -40,7 +39,6 @@
   .pill.ok { background:rgba(47,191,107,.16); color:var(--green); }
   .pill.err { background:rgba(229,72,77,.16); color:var(--red); }
   .pill.mut { background:rgba(154,163,178,.16); color:var(--mut); }
-  .pill.cooldown { background:rgba(229,72,77,.22); color:var(--red); font-variant-numeric:tabular-nums; }
   #statusCoord { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; width:100%; order:99; }
 
   /* --- map --- */
@@ -71,6 +69,12 @@
   .mini { padding:8px 12px; border:1px solid var(--line); border-radius:10px;
           background:#12151b; color:var(--fg); font-size:13px; font-weight:600; }
   .mini.danger { background:var(--red); color:#fff; border:none; }
+
+  /* --- speed stepper (ADR-050 #2: numeric −/+ instead of a slider) --- */
+  .speed-stepper { display:flex; align-items:center; gap:8px; }
+  .speed-stepper button.mini { flex:0 0 auto; padding:10px 16px; font-size:18px; line-height:1; }
+  .speed-stepper input[type=number] { width:84px; flex:0 0 auto; text-align:center; }
+  .speed-stepper .unit { flex:0 0 auto; font-size:14px; }
 
   /* --- queue --- */
   .queue-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
@@ -168,7 +172,6 @@
     <h1>📡 flyman</h1>
     <span id="pillConn" class="pill mut">連線中…</span>
     <span id="pillSim" class="pill mut hide">—</span>
-    <span id="pillCooldown" class="pill cooldown hide">—</span>
     <button type="button" class="mini" style="margin-left:auto; padding:6px 10px" onclick="showTab('cfg')">⚙</button>
     <div id="statusCoord" class="mut">—</div>
   </div>
@@ -247,6 +250,7 @@
       <div class="card">
         <div id="map"></div>
         <button type="button" id="followBtn" class="mini follow-btn" style="width:100%" onclick="reFollow()">🎯 回到藍點</button>
+        <div class="hint">點地圖上任一點即可傳送過去（會先跳出確認視窗）。</div>
       </div>
 
       <!-- NODE LIST -->
@@ -271,14 +275,11 @@
       <!-- SPEED -->
       <div class="card">
         <h2>速度</h2>
-        <input type="range" id="speedSlider" min="1" max="50" step="1" value="5">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px">
-          <span id="speedLabel" class="mut">— km/h</span>
-        </div>
-        <div class="seg" style="margin-top:10px">
-          <button type="button" onclick="setSpeedPreset(5)">🚶 走路 5</button>
-          <button type="button" onclick="setSpeedPreset(10)">🏃 跑步 10</button>
-          <button type="button" onclick="setSpeedPreset(15)">🚲 騎車 15</button>
+        <div class="speed-stepper">
+          <button type="button" class="mini" onclick="stepSpeed(-1)">−</button>
+          <input type="number" id="speedNum" min="1" max="30" step="1" inputmode="numeric" value="5">
+          <button type="button" class="mini" onclick="stepSpeed(1)">＋</button>
+          <span class="unit mut">km/h</span>
         </div>
         <div id="speedStatus" class="status"></div>
       </div>
@@ -371,7 +372,7 @@
           <h2>収藏</h2>
           <div id="collectionList"></div>
           <div id="collectionStatus" class="status"></div>
-          <div class="hint">只能看跟傳送 — 這裡不能新增、編輯、分享或刪除収藏項目，也不能重新走一次路線（路線沒有座標，也不會顯示照片）。</div>
+          <div class="hint">花點/菇點可以「傳送」，路線可以「開始路線」— 這裡不能新增、編輯、分享或刪除収藏項目；路線本身不會顯示座標，也不會顯示照片。</div>
         </div>
       </div>
 
@@ -579,7 +580,6 @@ function updateStatusStripForConfig() {
     $("pillConn").className = "pill mut";
     $("pillConn").textContent = "未使用控制台";
     $("pillSim").classList.add("hide");
-    $("pillCooldown").classList.add("hide");
     $("statusCoord").textContent = "—";
   }
 }
@@ -841,6 +841,17 @@ function ensureMap() {
   dotMarker = L.circleMarker([25.0330, 121.5654], { radius: 8, weight: 2, color: "#fff", fillColor: "#2f7bff", fillOpacity: 1 });
   dotMarker.addTo(map);
   map.on("dragstart", () => { autoFollow = false; $("followBtn").classList.add("show"); });
+  map.on("click", onMapClickTeleport);
+}
+
+// ADR-050 #3: tap the live console map to jump there — a lighter-weight path
+// than typing into the 傳送 coordinate box below. Never force=True; same
+// "teleport" kind + status element the manual 傳送 button already uses.
+function onMapClickTeleport(e) {
+  const lat = e.latlng.lat, lng = e.latlng.lng;
+  const coordStr = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  if (!confirm(`傳送到這個座標？\n${coordStr}`)) return;
+  sendCommand("teleport", { lat, lng }, null, "teleportStatus");
 }
 function reFollow() {
   autoFollow = true;
@@ -967,7 +978,6 @@ let lastState = {};
 let lastCommands = [];
 let pullInFlight = false;
 let pullTimer = null;
-let cooldownDeadline = 0;
 
 async function doPull() {
   if (pullInFlight) return;
@@ -1071,7 +1081,6 @@ function renderStatusStrip() {
   if (neverSynced) {
     $("pillConn").className = "pill mut"; $("pillConn").textContent = "尚未連線";
     $("pillSim").classList.add("hide");
-    $("pillCooldown").classList.add("hide");
     $("statusCoord").textContent = "—";
     return;
   }
@@ -1085,23 +1094,10 @@ function renderStatusStrip() {
   ps.className = "pill " + (lastState.simulating ? "ok" : "mut");
   ps.textContent = lastState.simulating ? "🟢 正在模擬 GPS" : "使用真實 GPS";
 
-  const remaining = Math.max(0, Math.ceil(+lastState.cooldown_remaining_s || 0));
-  cooldownDeadline = remaining > 0 ? Date.now() + remaining * 1000 : 0;
-  renderCooldownChip();
-
   const lat = typeof lastState.lat === "number" ? lastState.lat.toFixed(6) : "—";
   const lng = typeof lastState.lng === "number" ? lastState.lng.toFixed(6) : "—";
   $("statusCoord").textContent = `${lat}, ${lng}`;
 }
-
-function renderCooldownChip() {
-  const p = $("pillCooldown");
-  const remaining = Math.max(0, Math.ceil((cooldownDeadline - Date.now()) / 1000));
-  if (remaining <= 0) { p.classList.add("hide"); return; }
-  p.classList.remove("hide");
-  p.textContent = `⏳ 冷卻中 ${remaining}s`;
-}
-setInterval(renderCooldownChip, 1000);
 
 function renderTransport() {
   const mode = lastState.route ? lastState.route.mode : null;
@@ -1111,10 +1107,14 @@ function renderTransport() {
 }
 
 function renderSpeed() {
-  if (document.activeElement !== $("speedSlider")) {
-    $("speedSlider").value = lastState.speed_kmh != null ? lastState.speed_kmh : 5;
+  // Optimistic display: only let a poll overwrite the field while the user
+  // isn't actively editing it (mirrors the farmer-inputs guard below) — the
+  // user's whole complaint about the old slider was that the server echo lags.
+  if (document.activeElement !== $("speedNum")) {
+    const kmh = lastState.speed_kmh != null ? lastState.speed_kmh : 5;
+    $("speedNum").value = kmh;
+    _speedLastSent = kmh; // keep the commit-dedup guard in sync with server truth
   }
-  $("speedLabel").textContent = (lastState.speed_kmh != null ? lastState.speed_kmh : "—") + " km/h";
 }
 
 function renderMode() {
@@ -1326,15 +1326,36 @@ async function doStopAll() {
   await sendCommand("stop_all", {}, $("btnStopAll"), "transportStatus");
 }
 
-function setSpeedPreset(kmh) {
-  $("speedSlider").value = kmh;
-  $("speedLabel").textContent = kmh + " km/h";
+// Speed range 1–30 km/h (0 is rejected server-side: SpeedReq.kmh has ge=1.0 —
+// the 停止 button already covers "stop"). `_speedLastSent` dedups redundant
+// sendCommand calls when `change` AND `blur` both fire for the same commit
+// (e.g. tapping Enter then losing focus).
+let _speedLastSent = 5;
+function clampSpeedKmh(v) {
+  return Math.min(30, Math.max(1, Math.round(v)));
+}
+function commitSpeed() {
+  const el = $("speedNum");
+  const parsed = parseFloat(el.value);
+  if (!isFinite(parsed)) {
+    // Non-numeric / empty: revert display to the last known value, send nothing.
+    el.value = _speedLastSent;
+    return;
+  }
+  const kmh = clampSpeedKmh(parsed);
+  el.value = kmh; // reflect the clamp/round immediately, before the server echoes back
+  if (kmh === _speedLastSent) return; // nothing actually changed — skip the redundant call
+  _speedLastSent = kmh;
   sendCommand("speed", { kmh }, null, "speedStatus");
 }
-$("speedSlider").addEventListener("change", () => {
-  const kmh = parseFloat($("speedSlider").value);
-  sendCommand("speed", { kmh }, null, "speedStatus");
-});
+function stepSpeed(delta) {
+  const cur = parseFloat($("speedNum").value);
+  const base = isFinite(cur) ? cur : _speedLastSent;
+  $("speedNum").value = clampSpeedKmh(base + delta);
+  commitSpeed();
+}
+$("speedNum").addEventListener("change", commitSpeed);
+$("speedNum").addEventListener("blur", commitSpeed);
 
 function setMode(style) { sendCommand("route_style", { style }, null, "modeStatus"); }
 
@@ -1571,13 +1592,17 @@ async function doHistoryDelete(id) {
 }
 
 // ---------------------------------------------------------------------------
-// collection (収藏 tab) — read + teleport only, cached + versioned exactly
-// like cachedHistory above. No in-place edit UI here (per ADR-047: no remote
-// add/edit/rename/unshare/delete of a saved item — the only new command is
-// collection_teleport), so this is called unconditionally every render, with
-// no _retagOpenId-style guard needed.
+// collection (収藏 tab) — read + teleport/start-route only, cached + versioned
+// exactly like cachedHistory above. No in-place edit UI here (per ADR-047: no
+// remote add/edit/rename/unshare/delete of a saved item) — ADR-050 #4 adds
+// exactly ONE more command, collection_route_start, for `type === "route"`
+// items (mutually exclusive with the teleport action, which only applies to
+// `type === "location"` items that carry lat/lng). Route geometry is NEVER
+// published to the phone (ADR-049) — the Mac resolves + walks the route
+// locally from `item_id` alone. Called unconditionally every render, with no
+// _retagOpenId-style guard needed.
 // ---------------------------------------------------------------------------
-let _collSending = new Set(); // item ids with an in-flight collection_teleport
+let _collSending = new Set(); // item ids with an in-flight collection_teleport / collection_route_start
 
 const COLL_KIND_LABEL = { flower: "🌸 花點", mushroom: "🍄 菇點" };
 const COLL_CATEGORY_LABEL = { route: "路線", field: "花田" };
@@ -1610,7 +1635,8 @@ function renderCollection() {
 }
 
 function collectionRowHtml(item) {
-  const hasCoords = typeof item.lat === "number" && typeof item.lng === "number";
+  const isRoute = item.type === "route";
+  const hasCoords = !isRoute && typeof item.lat === "number" && typeof item.lng === "number";
   const photo = item.photo_url
     ? `<img class="coll-photo" src="${esc(item.photo_url)}" loading="lazy" alt="">`
     : `<div class="coll-photo empty">—</div>`;
@@ -1633,13 +1659,16 @@ function collectionRowHtml(item) {
   const teleportBtn = hasCoords
     ? `<button type="button" class="mini goto" data-id="${esc(String(item.id))}" ${sending ? "disabled" : ""} onclick="doCollectionTeleport(this.dataset.id)">📍 傳送</button>`
     : "";
+  const startRouteBtn = isRoute
+    ? `<button type="button" class="mini goto" data-id="${esc(String(item.id))}" ${sending ? "disabled" : ""} onclick="doCollectionRouteStart(this.dataset.id)">▶️ 開始路線</button>`
+    : "";
   return `<div class="coll-row">
       ${photo}
       <div class="coll-info">
         <div class="coll-name">${esc(item.name || "収藏項目")}${kindBadge}${categoryBadge}${sharedBadge}</div>
         <div class="coll-meta">${esc(coord)}</div>
       </div>
-      ${teleportBtn}
+      ${teleportBtn}${startRouteBtn}
     </div>`;
 }
 
@@ -1651,6 +1680,24 @@ async function doCollectionTeleport(id) {
   renderCollection();
   try {
     await sendCommand("collection_teleport", { item_id: String(id) }, null, "collectionStatus", itemLabel(id));
+  } finally {
+    _collSending.delete(String(id));
+    renderCollection();
+  }
+}
+
+// ADR-050 #4: start a saved route from 収藏. Only `item_id` ever leaves the
+// phone — no waypoints/geometry (ADR-049 whitelist-projection invariant); the
+// Mac resolves the route from its own library and starts it the same way
+// routes_ui.js's local loadAndStartRoute does.
+async function doCollectionRouteStart(id) {
+  const item = cachedCollection.find((x) => String(x.id) === String(id));
+  if (!item) return;
+  if (!confirm(`開始路線「${item.name || "這條路線"}」？`)) return;
+  _collSending.add(String(id));
+  renderCollection();
+  try {
+    await sendCommand("collection_route_start", { item_id: String(id) }, null, "collectionStatus", itemLabel(id));
   } finally {
     _collSending.delete(String(id));
     renderCollection();
