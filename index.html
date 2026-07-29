@@ -96,6 +96,10 @@
   .cmd-kind { font-size:13px; font-weight:600; }
   .cmd-status { font-size:12px; font-weight:500; color:var(--mut); margin-left:6px; }
   .cmd-row.rejected .cmd-status { color:var(--red); }
+  /* ADR-051 Phase 3: who issued this command (every kind, not just the ones
+     that create a history record) */
+  .cmd-user { display:inline-block; font-size:11px; font-weight:600; color:var(--blue);
+              background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; margin-left:6px; }
   .cmd-note { font-size:12px; color:var(--mut); margin-top:2px; }
   .cmd-time { font-size:11px; color:var(--mut); margin-top:2px; font-variant-numeric:tabular-nums; }
 
@@ -119,7 +123,7 @@
   .send { background:var(--green); }
   #sendMap { height:220px; border-radius:10px; margin-top:12px; display:none; }
 
-  /* --- 花田歷史 (PIN) tab: shown only when no control token is configured,
+  /* --- 花田歷史 (PIN) tab: shown only when no console identity is configured,
          see updateTabVisibility() — reuses the 歷史-tab's .hist-* rules below
          (identical row/badge/checkbox look for both), plus this list-only header. --- */
   .hist-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
@@ -143,6 +147,8 @@
   .hist-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hist-meta { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
   .hist-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--mut); margin-left:4px; }
+  /* ADR-051 Phase 3: who issued the remote command that created this record */
+  .hist-actor-badge { color:var(--blue); background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; }
   .hist-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
   .hist-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
   .mini.goto { background:var(--blue); color:#fff; border:none; }
@@ -214,8 +220,8 @@
       </div>
     </div>
 
-    <!-- ============ 花田歷史 (PIN) — shown only when no control token is
-         configured; when a token IS present the console's own 歷史 tab below
+    <!-- ============ 花田歷史 (PIN) — shown only when no console identity is
+         configured; once one IS present the console's own 歷史 tab below
          is strictly richer (both categories + retag + delete). ============ -->
     <div id="tabpane-hist" class="hide">
       <div class="card">
@@ -231,7 +237,7 @@
 
     <!-- Visible until the first pull proves otherwise — the honest pre-sync
          state, and the only thing on screen if that first pull throws. Only
-         relevant while a 路線/手機/歷史/収藏 (control-token) tab is active —
+         relevant while a 路線/手機/歷史/収藏 (console-identity) tab is active —
          see renderConsoleGate(). -->
     <div id="neverSynced" class="card never-synced hide">
       尚未連線到 Mac — 請確認 flyman 已經開機並且成功同步過一次。
@@ -378,24 +384,21 @@
 
     </div>
 
-    <!-- ============ CONFIG (merged: send-PIN + console-token) ============ -->
+    <!-- ============ CONFIG (ADR-051 phase 4: ONE name + ONE PIN — url/key are
+         baked-in page constants, see SUPABASE_URL/SUPABASE_ANON_KEY below) ===== -->
     <div id="tabpane-cfg" class="hide">
       <div class="card">
-        <label>Supabase URL</label>
-        <input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off">
-        <label>Anon Key（公開金鑰）</label>
-        <input id="cfgKey" placeholder="eyJhbGciOi…" autocomplete="off">
-        <label>使用者名稱（必填，與 Mac 的 FLYMAN_INBOX_USER 相同）</label>
-        <input id="cfgUser" placeholder="例如：zen" autocomplete="off">
-        <label>送出路線代碼（6 位數，與 Mac 的 FLYMAN_INBOX_PIN 相同）</label>
+        <label>使用者名稱（選你自己）</label>
+        <select id="cfgUser">
+          <option value="">— 請選擇 —</option>
+          <option value="zen">Zen</option>
+          <option value="jerry">Jerry</option>
+        </select>
+        <label>PIN（6 位數）</label>
         <input id="cfgPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off">
-        <label>控制台控制碼（control token，與 Mac 的 FLYMAN_CONTROL_TOKEN 相同）</label>
-        <input id="cfgToken" type="password" placeholder="長串控制密碼" autocomplete="off">
         <div class="hint">
-          這是兩組完全不同的密碼，權限差很多：<b>代碼</b>只能把新路線送進佇列；
-          <b>控制碼</b>可以直接遙控 Mac（暫停/繼續/傳送/停止…連續 10 次錯誤會鎖定 15 分鐘）。
-          只填「代碼」就能用「送出路線」＋「花田歷史」；只填「控制碼」就能用「路線／手機／歷史／収藏」；
-          兩者都填就兩邊都能用。
+          這組名稱＋PIN 同時開通「送出路線／花田歷史」與「路線／手機／歷史／収藏」控制台
+          （與 Mac 的 FLYMAN_CONSOLE_PINS 相同；連續 10 次錯誤會暫時鎖定 15 分鐘）。
         </div>
         <button class="act save" onclick="saveCfgForm()">💾 儲存設定</button>
         <div id="cfgStatus" class="status"></div>
@@ -411,34 +414,55 @@
 const $ = (id) => document.getElementById(id);
 const ls = (k, v) => (v === undefined ? (localStorage.getItem(k) || "") : localStorage.setItem(k, v));
 
+// ADR-051 phase 4: URL + anon key are baked in as page constants (no longer
+// typed fields). This console is published to a PUBLIC repo, so the ONLY
+// secret-ish value that may EVER appear here is the Supabase ANON key —
+// NEVER the service-role key, NEVER a PIN. The anon key's JWT `role` claim
+// must decode to "anon" (verified before embedding).
+const SUPABASE_URL = "https://yftqsboogjuhltadbftx.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlmdHFzYm9vZ2p1aGx0YWRiZnR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5NTQ4MzAsImV4cCI6MjA5NjUzMDgzMH0.DpP9CIYU8KAEM44BXmJQWJzUuYsY3nuSmLMUI07xr18";
+
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 // ONE merged config reader, superset of both credential sets. INVARIANT (see
-// docs/DECISIONS.md ADR-045/046 remote-control section): the 送出/花田歷史 (PIN)
-// code paths below destructure ONLY {url,key,pin,user} from this and must never
-// read .token; the console (路線/手機/歷史/収藏) code paths destructure ONLY
-// {url,key,user,token} and must never read .pin. Holding only one credential
-// must never reach the other credential's blast radius.
+// docs/DECISIONS.md ADR-045/046/051 remote-control section): the 送出/花田歷史
+// (PIN) code paths below destructure ONLY {url,key,pin,user} from this and
+// must never read .consoleUser/.consolePin; the console (路線/手機/歷史/収藏)
+// code paths destructure ONLY {url,key,consoleUser,consolePin} and must never
+// read .user/.pin. Holding only one credential set must never reach the
+// other credential's blast radius.
+//
+// ADR-051 phase 4: url/key are now the baked-in constants above (no longer
+// user-typed). The settings tab now writes ONE picked name + ONE PIN into
+// BOTH {user,pin} AND {consoleUser,consolePin} (see saveCfgForm) so the user
+// types it once — but the four fields stay FOUR separate localStorage keys /
+// cfg() fields, preserving the read-invariant above unchanged: the PIN-world
+// code below still only ever reads {user,pin}, the console code still only
+// ever reads {consoleUser,consolePin}.
 function cfg() {
   return {
-    url: ls("flyman_sb_url"),
-    key: ls("flyman_sb_key"),
+    url: SUPABASE_URL,
+    key: SUPABASE_ANON_KEY,
     user: ls("flyman_inbox_user"),
     pin: ls("flyman_inbox_pin"),
-    token: ls("flyman_control_token"),
+    consoleUser: ls("flyman_console_user"),
+    consolePin: ls("flyman_console_pin"),
   };
 }
 function pinComplete() {
   const c = cfg();
   return !!(c.url && c.key && c.user && c.pin);
 }
-function tokenComplete() {
+function consoleComplete() {
   const c = cfg();
-  return !!(c.url && c.key && c.user && c.token);
+  return !!(c.url && c.key && c.consoleUser && c.consolePin);
 }
 
 // ---------------------------------------------------------------------------
-// RPC transport — two PostgREST RPC functions, see supabase/remote_control.sql
+// RPC transport — FOUR PostgREST RPCs across the two credential worlds:
+//   token world (supabase/remote_control.sql): flyman_remote_pull, flyman_remote_command
+//   PIN world   (supabase/flower_history.sql): flyman_flower_history_pull,
+//                                              flyman_route_inbox_submit  (ADR-051 ph.5)
 // ---------------------------------------------------------------------------
 async function rpc(fn, args) {
   const { url, key } = cfg();
@@ -457,10 +481,10 @@ async function rpc(fn, args) {
 // NOTE: there is deliberately no "locked" entry — the server no longer returns a
 // distinct lockout reason. A separate 'locked' answer was a username oracle (an
 // unknown username can never lock out), so an active 15-minute lockout now looks
-// exactly like a wrong control token. See supabase/remote_control.sql.
+// exactly like a wrong PIN. See supabase/remote_control.sql.
 function reasonText(reason) {
   const map = {
-    bad_token: "驗證失敗：控制碼不正確，或剛才錯太多次被暫時鎖定，請確認後稍待幾分鐘再試",
+    bad_token: "驗證失敗：PIN 不正確，或剛才錯太多次被暫時鎖定，請確認後稍待幾分鐘再試",
     bad_kind: "指令種類不正確",
     too_large: "指令內容過大",
     bad_username: "使用者名稱不正確",
@@ -477,15 +501,17 @@ function reasonText(reason) {
   return map[reason] || ("失敗：" + reason);
 }
 
-// Control-token auth failure ONLY (the PIN path has its own inline error
-// handling per network call — see doSend/doStop/doToggleCheck/doGoto — because
-// route_inbox is a plain table POST with no shared "auth failed" concept).
+// Console-identity auth failure ONLY (the send-PIN path has its own inline
+// error handling per network call — see doSend/doStop/doToggleCheck/doGoto —
+// which since ADR-051 ph.5 go through flyman_route_inbox_submit and surface
+// that RPC's own {ok:false, reason} rather than a shared "auth failed"
+// concept).
 function handleAuthFail(reason) {
   if (reason === "bad_token") {
     stopPolling();
     showTab("cfg");
     const s = $("cfgStatus");
-    s.textContent = "❌ 控制碼不正確（或剛才錯太多次被暫時鎖定），請確認後稍待幾分鐘再試";
+    s.textContent = "❌ PIN 不正確（或剛才錯太多次被暫時鎖定），請確認後稍待幾分鐘再試";
     s.className = "status err";
   }
 }
@@ -498,40 +524,43 @@ function flash(elId, ok, msg) {
 }
 
 // ---------------------------------------------------------------------------
-// config (merged form: url/key/user + PIN + control token)
+// config (merged form: url/key/user + send-PIN + console identity/PIN)
 // ---------------------------------------------------------------------------
+// ADR-051 phase 4: one picked name + one PIN, written into BOTH the PIN-world
+// and console-world localStorage keys (see cfg()'s invariant comment above).
+// Prefer the console-world value on load (arbitrary but consistent choice)
+// so a phone that already had settings saved under the pre-phase-4 scheme
+// still shows something sensible; falls back to the PIN-world value.
 function loadCfgForm() {
-  $("cfgUrl").value = ls("flyman_sb_url");
-  $("cfgKey").value = ls("flyman_sb_key");
-  $("cfgUser").value = ls("flyman_inbox_user");
-  $("cfgPin").value = ls("flyman_inbox_pin");
-  $("cfgToken").value = ls("flyman_control_token");
+  $("cfgUser").value = ls("flyman_console_user") || ls("flyman_inbox_user");
+  $("cfgPin").value = ls("flyman_console_pin") || ls("flyman_inbox_pin");
 }
 function saveCfgForm() {
-  ls("flyman_sb_url", $("cfgUrl").value.trim().replace(/\/+$/, ""));
-  ls("flyman_sb_key", $("cfgKey").value.trim());
-  ls("flyman_inbox_user", $("cfgUser").value.trim());
-  ls("flyman_inbox_pin", $("cfgPin").value.trim());
-  ls("flyman_control_token", $("cfgToken").value.trim());
+  const user = $("cfgUser").value.trim();
+  const pin = $("cfgPin").value.trim();
+  ls("flyman_inbox_user", user);
+  ls("flyman_inbox_pin", pin);
+  ls("flyman_console_user", user);
+  ls("flyman_console_pin", pin);
   updateTabVisibility();
   updateStatusStripForConfig();
   loadPalette(); // ADR-033: pick up the live palette now that creds may be set
   const s = $("cfgStatus");
-  if (!pinComplete() && !tokenComplete()) {
-    s.textContent = "請至少完整填寫一組：URL + Key + 使用者名稱 + 代碼，或 URL + Key + 使用者名稱 + 控制碼";
+  if (!pinComplete() && !consoleComplete()) {
+    s.textContent = "請選擇使用者名稱並輸入 6 位數 PIN";
     s.className = "status err";
     return;
   }
   s.textContent = "✅ 已儲存"; s.className = "status ok";
   setTimeout(() => {
-    if (tokenComplete()) { showTab("route"); startPolling(); }
+    if (consoleComplete()) { showTab("route"); startPolling(); }
     else { stopPolling(); showTab("send"); }
   }, 300);
 }
 
 // ---------------------------------------------------------------------------
-// tabs — 送出/花田歷史 (PIN) + 路線/手機/歷史/収藏 (control token) + 設定, all as
-// flat tabs in ONE bar (not a full-screen swap). 路線/手機/歷史/収藏 additionally
+// tabs — 送出/花田歷史 (PIN) + 路線/手機/歷史/収藏 (console identity+PIN) + 設定, all
+// as flat tabs in ONE bar (not a full-screen swap). 路線/手機/歷史/収藏 additionally
 // live inside #mainSections, so they share its never-synced gate; see
 // renderConsoleGate() and the comment on #mainSections in the HTML.
 // ---------------------------------------------------------------------------
@@ -556,27 +585,27 @@ function showTab(which) {
 }
 
 // Which tab buttons are even shown, per credential (Invariant 2, progressive
-// disclosure): PIN configured -> 送出 (+ 花田歷史 only when NO token is set,
-// since the console's own 歷史 tab is strictly richer once a token exists);
-// control token configured -> 路線/手機/歷史/収藏. Neither -> only ⚙ 設定.
+// disclosure): PIN configured -> 送出 (+ 花田歷史 only when NO console identity
+// is set, since the console's own 歷史 tab is strictly richer once one exists);
+// console identity+PIN configured -> 路線/手機/歷史/収藏. Neither -> only ⚙ 設定.
 function updateTabVisibility() {
-  const pin = pinComplete(), tok = tokenComplete();
+  const pin = pinComplete(), console_ = consoleComplete();
   $("tab-send").classList.toggle("hide", !pin);
-  $("tab-hist").classList.toggle("hide", !(pin && !tok));
-  CONSOLE_TABS.forEach((t) => $("tab-" + t).classList.toggle("hide", !tok));
+  $("tab-hist").classList.toggle("hide", !(pin && !console_));
+  CONSOLE_TABS.forEach((t) => $("tab-" + t).classList.toggle("hide", !console_));
 }
 
 function defaultTab() {
-  if (tokenComplete()) return "route";
+  if (consoleComplete()) return "route";
   if (pinComplete()) return "send";
   return "cfg";
 }
 
-// Without a control token the RPC poll loop never runs, so lastState/renderAll
-// never touch the status strip — reset it to a neutral state instead of
-// leaving it stuck on the boot-time "連線中…" placeholder forever.
+// Without a console identity the RPC poll loop never runs, so lastState/
+// renderAll never touch the status strip — reset it to a neutral state
+// instead of leaving it stuck on the boot-time "連線中…" placeholder forever.
 function updateStatusStripForConfig() {
-  if (!tokenComplete()) {
+  if (!consoleComplete()) {
     $("pillConn").className = "pill mut";
     $("pillConn").textContent = "未使用控制台";
     $("pillSim").classList.add("hide");
@@ -584,12 +613,12 @@ function updateStatusStripForConfig() {
   }
 }
 
-// #neverSynced / #mainSections are only meaningful while a control-token
+// #neverSynced / #mainSections are only meaningful while a console-identity
 // (路線/手機/歷史/収藏) tab is the active one — a PIN-only visitor on 送出/花田歷史
 // must never see "尚未連線到 Mac", since that message is about the RPC pull
 // loop they aren't using at all.
 function renderConsoleGate() {
-  const isConsoleTab = CONSOLE_TABS.includes(currentTab) && tokenComplete();
+  const isConsoleTab = CONSOLE_TABS.includes(currentTab) && consoleComplete();
   const neverSynced = !lastState || Object.keys(lastState).length === 0;
   $("neverSynced").classList.toggle("hide", !(isConsoleTab && neverSynced));
   $("mainSections").classList.toggle("hide", !(isConsoleTab && !neverSynced));
@@ -601,7 +630,7 @@ function renderConsoleGate() {
 // (apikey + Authorization: Bearer headers), NEVER through rpc()/flyman_remote_*
 // — a completely separate transport AND a completely separate credential (the
 // 6-digit PIN, sent as the `secret` field in the POST body) from the console
-// code below. See the cfg()/pinComplete()/tokenComplete() split above.
+// code below. See the cfg()/pinComplete()/consoleComplete() split above.
 // ===========================================================================
 
 // Clear the paste box; reset any prior parse/preview.
@@ -683,19 +712,18 @@ function doParse() {
 async function doSend() {
   const { url, key, pin, user } = cfg();
   const s = $("sendStatus");
-  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / 代碼 / 使用者名稱"; s.className = "status err"; return; }
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入使用者名稱 / PIN"; s.className = "status err"; return; }
   if (!parsedPts) { s.textContent = "請先解析路線"; s.className = "status err"; return; }
   const flower = $("flower").value, colour = $("colour").value;
   const name = flower ? ((COLOR_LABEL[colour] || "") + flower) : "手機路線";
   const btn = $("sendBtn"); btn.disabled = true;
   s.textContent = "送出中…"; s.className = "status mut";
   try {
-    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
-      method: "POST",
-      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({ source: "phone", status: "apply", kind: "route", raw_text: rawText, name, flower, colour, secret: pin, username: user }),
+    const data = await rpc("flyman_route_inbox_submit", {
+      p_username: user, p_secret: pin, p_kind: "route", p_raw_text: rawText,
+      p_name: name, p_flower: flower, p_colour: colour,
     });
-    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會加入佇列"; s.className = "status ok";
     pushFlowerMru(flower); fillPalette();  // ADR-033: MRU bubble-up
     setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
@@ -715,12 +743,11 @@ async function doStop() {
   _stopBusy = true;
   s.textContent = "送出停止訊號…"; s.className = "status mut";
   try {
-    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
-      method: "POST",
-      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({ source: "phone", status: "apply", kind: "stop", raw_text: "", name: "停止", secret: pin, username: user }),
+    const data = await rpc("flyman_route_inbox_submit", {
+      p_username: user, p_secret: pin, p_kind: "stop", p_raw_text: "",
+      p_name: "停止", p_flower: "", p_colour: "",
     });
-    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = "✅ 已送出停止訊號，約 10 秒內恢復真實 GPS"; s.className = "status ok";
   } catch (err) {
     s.textContent = "❌ " + err.message; s.className = "status err";
@@ -729,21 +756,39 @@ async function doStop() {
 }
 
 // --- 花田 history (PIN path): list the locations the Mac published; tap 傳送
-// to teleport (換位置). Shown only when no control token is configured — see
-// updateTabVisibility(); when a token IS present the richer 歷史 tab (below,
-// historyRowHtml/doHistoryCheck/etc.) supersedes this. ---
+// to teleport (換位置). Shown only when no console identity is configured —
+// see updateTabVisibility(); once one IS present the richer 歷史 tab (below,
+// historyRowHtml/doHistoryCheck/etc.) supersedes this.
+//
+// ADR-051 phase 1: reads through the flyman_flower_history_pull RPC (SECURITY
+// DEFINER, verifies the SAME 送出路線代碼/PIN this tab already requires)
+// instead of a direct anon-key SELECT on flower_history — the old direct read
+// let anyone holding the (public, committed) anon key read EVERY user's rows,
+// not just the requesting username's. Uses the SAME rpc() helper the
+// console below already uses; this call still authenticates with {pin, user}
+// (the SEND-PIN world's own {user,pin}) — NEVER {consoleUser, consolePin}
+// (Invariant 2, see cfg()'s comment).
+//
+// ADR-051 phase 5: doSend/doStop/doToggleCheck/doGoto below likewise now call
+// the flyman_route_inbox_submit RPC instead of POSTing straight to
+// /rest/v1/route_inbox — that table's anon INSERT grant + literal-secret RLS
+// policy are gone (supabase/route_inbox.sql); the RPC verifies {user,pin}
+// per-user against route_inbox_auth before inserting (supabase/
+// flower_history.sql). Still {pin, user} only, never {consoleUser, consolePin}.
 let _histRows = [];
 async function loadHistory() {
-  const { url, key, user } = cfg();
+  const { url, key, pin, user } = cfg();
   const s = $("histStatus"), list = $("histList");
-  if (!url || !key || !user) { s.textContent = "請先到「⚙ 設定」填入 URL / Key / 使用者名稱"; s.className = "status err"; list.innerHTML = ""; return; }
+  if (!url || !key || !user || !pin) { s.textContent = "請先到「⚙ 設定」填入使用者名稱 / PIN"; s.className = "status err"; list.innerHTML = ""; return; }
   s.textContent = "載入中…"; s.className = "status mut";
   try {
-    const q = `${url}/rest/v1/flower_history?username=eq.${encodeURIComponent(user)}&order=record_id.desc&limit=100`;
-    const resp = await fetch(q, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
-    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
-    _histRows = await resp.json();
-    if (!Array.isArray(_histRows) || !_histRows.length) {
+    const data = await rpc("flyman_flower_history_pull", { p_username: user, p_secret: pin });
+    if (!data || data.ok !== true) {
+      s.textContent = "❌ 驗證失敗：代碼不正確，或剛才錯太多次被暫時鎖定，請確認後稍待幾分鐘再試";
+      s.className = "status err"; list.innerHTML = ""; return;
+    }
+    _histRows = Array.isArray(data.rows) ? data.rows : [];
+    if (!_histRows.length) {
       s.textContent = "尚無花田歷史（Mac 走過花田後會自動同步）"; s.className = "status mut"; list.innerHTML = ""; return;
     }
     s.textContent = ""; s.className = "status mut";
@@ -777,16 +822,12 @@ async function doToggleCheck(i, checked, el) {
   r.checked = checked;                 // optimistic (the <input> already flipped)
   if (el) el.disabled = true;          // guard against overlapping toggles on this row
   try {
-    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
-      method: "POST",
-      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({
-        source: "phone", status: "apply", kind: "check",
-        raw_text: JSON.stringify({ record_id: r.record_id, checked }),
-        name: r.name || "花田", secret: pin, username: user,
-      }),
+    const data = await rpc("flyman_route_inbox_submit", {
+      p_username: user, p_secret: pin, p_kind: "check",
+      p_raw_text: JSON.stringify({ record_id: r.record_id, checked }),
+      p_name: r.name || "花田", p_flower: "", p_colour: "",
     });
-    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 100)}`); }
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = "✅ 已同步"; s.className = "status ok";
   } catch (err) {
     revert();   // put the checkbox (DOM + state) back — no full reload to race a retry
@@ -804,16 +845,12 @@ async function doGoto(i) {
   if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入設定"; s.className = "status err"; return; }
   s.textContent = "送出換位置…"; s.className = "status mut";
   try {
-    const resp = await fetch(`${url}/rest/v1/route_inbox`, {
-      method: "POST",
-      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({
-        source: "phone", status: "apply", kind: "goto",
-        raw_text: `${(+r.lat).toFixed(6)},${(+r.lng).toFixed(6)}`,
-        name: r.name || "花田", secret: pin, username: user,
-      }),
+    const data = await rpc("flyman_route_inbox_submit", {
+      p_username: user, p_secret: pin, p_kind: "goto",
+      p_raw_text: `${(+r.lat).toFixed(6)},${(+r.lng).toFixed(6)}`,
+      p_name: r.name || "花田", p_flower: "", p_colour: "",
     });
-    if (!resp.ok) { const e = await resp.text(); throw new Error(`${resp.status}: ${e.slice(0, 140)}`); }
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = `✅ 已送出，約 10 秒內傳送到「${r.name || "花田"}」`; s.className = "status ok";
   } catch (err) {
     s.textContent = "❌ " + err.message; s.className = "status err";
@@ -916,6 +953,13 @@ async function doJump(i) {
 // added to BOTH lists here — retagging needs an explicit "clear this field"
 // choice that index.html's send-a-new-route flow never needed.
 // ---------------------------------------------------------------------------
+// ADR-051 Phase 3: display label for a remote-console username (matches the
+// #cfgUser <option> values above — "zen"/"jerry"). An unrecognized
+// username (future third user, added to FLYMAN_CONSOLE_PINS but not yet
+// given a label here) falls back to the raw value rather than hiding it.
+const ACTOR_LABELS = { zen: "Zen", jerry: "Jerry" };
+function actorLabel(username) { return ACTOR_LABELS[username] || username; }
+
 let COLOURS = [["", "（不設定顏色）"], ["white", "白"], ["yellow", "黃"], ["blue", "藍"], ["red", "紅"], ["random", "混色"]];
 let COLOR_LABEL = { white: "白", yellow: "黃", blue: "藍", red: "紅", random: "混色" };
 let FLOWERS = [
@@ -981,12 +1025,12 @@ let pullTimer = null;
 
 async function doPull() {
   if (pullInFlight) return;
-  if (!tokenComplete()) return;
+  if (!consoleComplete()) return;
   pullInFlight = true;
   try {
-    const { user, token } = cfg();
+    const { consoleUser, consolePin } = cfg();
     const res = await rpc("flyman_remote_pull", {
-      p_username: user, p_token: token,
+      p_username: consoleUser, p_pin: consolePin,
       p_since_version: cachedVersion,
       p_since_history_version: cachedHistoryVersion,
       p_since_collection_version: cachedCollectionVersion,
@@ -1037,7 +1081,7 @@ function stopPolling() {
 }
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { /* interval guard above already skips while hidden */ }
-  else if (tokenComplete()) doPull();
+  else if (consoleComplete()) doPull();
 });
 
 // ---------------------------------------------------------------------------
@@ -1233,6 +1277,11 @@ function historyRowHtml(r) {
   const colourLabel = COLOR_LABEL[r.colour] || "";
   const tag = (r.flower || colourLabel)
     ? `<span class="hist-badge">${esc(colourLabel + (r.flower || ""))}</span>` : "";
+  // ADR-051 Phase 3: who issued the remote command that created this record.
+  // Absent for every local action (and every pre-Phase-3 record) — rendered
+  // as nothing, not a placeholder, so old rows look exactly as before.
+  const actorTag = r.actor
+    ? `<span class="hist-badge hist-actor-badge">${esc(actorLabel(r.actor))}</span>` : "";
   const coord = (typeof r.lat === "number" && typeof r.lng === "number")
     ? `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}` : "—";
   const checking = _historyChecking.has(+r.id);
@@ -1240,7 +1289,7 @@ function historyRowHtml(r) {
       <input type="checkbox" class="hist-check" ${r.checked ? "checked" : ""}${checking ? " disabled" : ""}
              onchange="doHistoryCheck(${+r.id}, this.checked, this)">
       <div class="hist-info">
-        <div class="hist-name">${esc(label)}${tag}</div>
+        <div class="hist-name">${esc(label)}${tag}${actorTag}</div>
         <div class="hist-meta">${esc(coord)} · <span title="${esc(fmtAbsTime(r.ts))}">${esc(relTime(r.ts))}</span></div>
       </div>
       <div class="hist-actions">
@@ -1269,12 +1318,20 @@ function retagPanelHtml(r) {
 function renderCommands() {
   const box = $("cmdLog");
   if (!lastCommands.length) { box.innerHTML = '<div class="mut" style="padding:6px 4px">尚無紀錄</div>'; return; }
-  box.innerHTML = lastCommands.map((c) => `
+  box.innerHTML = lastCommands.map((c) => {
+    // ADR-051 Phase 3: WHO issued this command — covers EVERY kind (pause,
+    // speed, disconnect…), unlike the 歷史 actor badge which only ever shows
+    // up on the three kinds that create a history record. `issued_by` is ""
+    // for a pre-Phase-3 row (the table default) — render nothing, not a
+    // placeholder, for those.
+    const who = c.issued_by ? `<span class="cmd-user">${esc(actorLabel(c.issued_by))}</span>` : "";
+    return `
     <div class="cmd-row${c.status === "rejected" ? " rejected" : ""}">
-      <div class="cmd-kind">${esc(c.kind)}<span class="cmd-status">${esc(c.status)}</span></div>
+      <div class="cmd-kind">${esc(c.kind)}<span class="cmd-status">${esc(c.status)}</span>${who}</div>
       ${c.note ? `<div class="cmd-note">${esc(c.note)}</div>` : ""}
       <div class="cmd-time">${esc(fmtTime(c.created_at))}</div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 function fmtTime(iso) {
   try { return new Date(iso).toLocaleTimeString("zh-Hant", { hour12: false }); } catch (_) { return iso || ""; }
@@ -1292,8 +1349,8 @@ async function sendCommand(kind, payload, btn, statusElId, label) {
   // textContent (never innerHTML), so no HTML-escaping is needed/wanted here.
   const prefix = label ? label + "：" : "";
   try {
-    const { user, token } = cfg();
-    const res = await rpc("flyman_remote_command", { p_username: user, p_token: token, p_kind: kind, p_payload: payload });
+    const { consoleUser, consolePin } = cfg();
+    const res = await rpc("flyman_remote_command", { p_username: consoleUser, p_pin: consolePin, p_kind: kind, p_payload: payload });
     if (!res.ok) {
       handleAuthFail(res.reason);
       if (statusElId) flash(statusElId, false, prefix + "❌ " + reasonText(res.reason));
@@ -1519,9 +1576,9 @@ async function doHistoryCheck(id, checked, el) {
   _historyChecking.add(+id);
   if (el) el.disabled = true;
   try {
-    const { user, token } = cfg();
+    const { consoleUser, consolePin } = cfg();
     const res = await rpc("flyman_remote_command", {
-      p_username: user, p_token: token, p_kind: "history_check", p_payload: { id: +id, checked },
+      p_username: consoleUser, p_pin: consolePin, p_kind: "history_check", p_payload: { id: +id, checked },
     });
     if (!res.ok) {
       handleAuthFail(res.reason);
@@ -1572,9 +1629,9 @@ async function doHistoryDelete(id) {
   if (_retagOpenId === +id) _retagOpenId = null;
   renderHistory();
   try {
-    const { user, token } = cfg();
+    const { consoleUser, consolePin } = cfg();
     const res = await rpc("flyman_remote_command", {
-      p_username: user, p_token: token, p_kind: "history_delete", p_payload: { id: +id },
+      p_username: consoleUser, p_pin: consolePin, p_kind: "history_delete", p_payload: { id: +id },
     });
     if (!res.ok) {
       handleAuthFail(res.reason);
@@ -1713,7 +1770,7 @@ loadPalette();   // ADR-033: refresh from Supabase if creds are set
 updateTabVisibility();
 updateStatusStripForConfig();
 showTab(defaultTab());
-if (tokenComplete()) startPolling();
+if (consoleComplete()) startPolling();
 </script>
 </body>
 </html>
