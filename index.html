@@ -102,6 +102,9 @@
               background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; margin-left:6px; }
   .cmd-note { font-size:12px; color:var(--mut); margin-top:2px; }
   .cmd-time { font-size:11px; color:var(--mut); margin-top:2px; font-variant-numeric:tabular-nums; }
+  /* dual-timezone (Zen=Arizona / Jerry=Taiwan) absolute times, under the
+     existing relative-time label — wraps freely on a narrow phone screen. */
+  .cmd-time-abs { display:block; margin-top:1px; opacity:.85; }
 
   .never-synced { text-align:center; padding:24px 14px; color:var(--mut); font-size:14px; }
 
@@ -157,19 +160,34 @@
   .hist-retag-btns { display:flex; gap:6px; }
 
   /* --- collection list (収藏 tab) --- */
+  /* F4: each list has a clickable, keyboard-focusable header (chevron + name
+     + count) that toggles that list's rows; .coll-list-name keeps its old
+     typography, now nested inside the header row instead of standing alone. */
+  .coll-list-header { display:flex; align-items:center; gap:8px; cursor:pointer;
+                       padding:8px 4px; margin:14px 0 2px; border-radius:8px; }
+  .coll-list-header:first-child { margin-top:0; }
+  .coll-list-header:hover { background:rgba(128,128,128,.08); }
+  .coll-list-header:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .coll-chevron { flex:0 0 auto; width:14px; text-align:center; color:var(--mut); font-size:12px; }
   .coll-list-name { font-size:13px; font-weight:700; color:var(--mut); text-transform:uppercase;
-                     letter-spacing:.02em; margin:14px 0 4px; }
-  .coll-list-name:first-child { margin-top:0; }
+                     letter-spacing:.02em; }
+  .coll-list-count { margin-left:auto; font-size:12px; color:var(--mut); }
   .coll-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
               border-bottom:1px solid rgba(128,128,128,.18); }
-  .coll-photo { width:48px; height:48px; border-radius:8px; object-fit:cover;
+  /* A1: roughly doubled from 48px so a saved-point photo is actually
+     previewable; object-fit:cover keeps the square crop (no squashing). */
+  .coll-photo { width:96px; height:96px; border-radius:10px; object-fit:cover;
                 background:#12151b; flex:0 0 auto; }
   .coll-photo.empty { display:flex; align-items:center; justify-content:center;
-                       color:var(--mut); font-size:18px; border:1px dashed var(--line); }
+                       color:var(--mut); font-size:32px; border:1px dashed var(--line); }
   .coll-info { flex:1; min-width:0; }
   .coll-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .coll-meta { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
   .coll-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--mut); margin-left:4px; }
+  /* F3: 傳送 + 複製 (location) or just 開始路線 (route) stack vertically —
+     mirrors .hist-actions — so the wider photo still leaves room for text. */
+  .coll-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
+  .coll-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -935,18 +953,39 @@ let cachedHistoryVersion = -1;
 let cachedCollection = [];
 let cachedCollectionVersion = -1;
 
+// P1 ROOT CAUSE (diagnosed): this used to call `cur.scrollIntoView({...,
+// block:"nearest"})` on EVERY renderAll() tick (every 1.5 s), unconditionally
+// — including whenever the user had scrolled the PAGE down to read e.g. the
+// 指令紀錄 feed below. #nodeStrip only scrolls horizontally (overflow-x:auto);
+// it establishes no vertical scroll container of its own, so a `block`
+// alignment request on it bubbles up the ancestor chain looking for one that
+// *does* scroll vertically — which is the window itself. The moment the
+// active chip scrolled out of the viewport (exactly what happens when the
+// user scrolls down to the command log), the very next tick's scrollIntoView
+// snapped the whole page back up to reveal it again. Fixed by never touching
+// vertical/window scroll here at all: center the chip using the node strip's
+// OWN scrollLeft only, and only when the active node actually changed.
+let _lastCenteredNodeIdx = -1;
+function centerNodeChipHorizontally(chip, strip) {
+  const target = chip.offsetLeft - (strip.clientWidth - chip.offsetWidth) / 2;
+  strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+}
 function renderNodeStrip() {
   const box = $("nodeStrip");
   if (!cachedWaypoints.length) {
-    box.innerHTML = '<div class="mut" style="padding:6px 4px">尚無路線</div>';
+    renderIfChanged(box, '<div class="mut" style="padding:6px 4px">尚無路線</div>');
     return;
   }
   const curIdx = lastState.route ? lastState.route.current_segment_idx : -1;
-  box.innerHTML = cachedWaypoints.map((_, i) =>
+  const html = cachedWaypoints.map((_, i) =>
     `<div class="node-chip${i === curIdx ? " on" : ""}" data-i="${i}" onclick="doJump(${i})">#${i + 1}</div>`
   ).join("");
-  const cur = box.querySelector(".node-chip.on");
-  if (cur) cur.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  renderIfChanged(box, html);
+  if (curIdx !== _lastCenteredNodeIdx) {
+    _lastCenteredNodeIdx = curIdx;
+    const cur = box.querySelector(".node-chip.on");
+    if (cur) centerNodeChipHorizontally(cur, box);
+  }
 }
 
 async function doJump(i) {
@@ -1094,6 +1133,29 @@ document.addEventListener("visibilitychange", () => {
 // ---------------------------------------------------------------------------
 // rendering
 // ---------------------------------------------------------------------------
+
+// P1 fix: the poll loop (doPull -> renderAll, every 1.5 s) used to rebuild
+// several blocks' innerHTML unconditionally on EVERY tick, even when nothing
+// in them had actually changed — most of the time the 指令紀錄 feed, the node
+// strip and the queue list are byte-identical tick to tick. Two guards, per
+// block:
+//  (1) skip the DOM write entirely when the new HTML is identical to what's
+//      already there (cached on the element itself) — eliminates the jump on
+//      almost every tick outright, since nothing gets destroyed/recreated.
+//  (2) for a write that IS necessary (content genuinely changed), capture
+//      window.scrollY immediately before and restore it immediately after,
+//      so a genuine change elsewhere on the page can't yank the viewport the
+//      user is reading. Never calls scrollIntoView()/focus() — see
+//      renderNodeStrip's centerNodeChipHorizontally for why that matters.
+function renderIfChanged(el, html) {
+  if (!el || el.__lastHtml === html) return false;
+  const scrollY = window.scrollY;
+  el.__lastHtml = html;
+  el.innerHTML = html;
+  if (window.scrollY !== scrollY) window.scrollTo(0, scrollY);
+  return true;
+}
+
 function setConnPill(kind, text) {
   const p = $("pillConn");
   if (kind === "ok-not-yet") return; // overwritten by renderStatusStrip right after
@@ -1185,8 +1247,8 @@ function renderMode() {
 function renderQueue() {
   const q = lastState.queue || [];
   const box = $("queueList");
-  if (!q.length) { box.innerHTML = '<div class="mut" style="padding:8px 4px">佇列是空的</div>'; return; }
-  box.innerHTML = q.map((item) => `
+  if (!q.length) { renderIfChanged(box, '<div class="mut" style="padding:8px 4px">佇列是空的</div>'); return; }
+  const html = q.map((item) => `
     <div class="queue-row${item.playing ? " on" : ""}">
       <div class="queue-info">
         <div class="queue-name">${esc(item.name || "路線")}${item.playing ? '<span class="badge-playing">播放中</span>' : ""}</div>
@@ -1194,6 +1256,7 @@ function renderQueue() {
       </div>
       <button type="button" class="mini danger" onclick="doQueueRemove(${+item.index}, this)">移除</button>
     </div>`).join("");
+  renderIfChanged(box, html);
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,6 +1342,36 @@ function fmtAbsTime(ts) {
   try { return new Date(ts * 1000).toLocaleString("zh-Hant", { hour12: false }); } catch (_) { return ""; }
 }
 
+// Dual-timezone timestamp formatting — Zen is in Arizona, Jerry is in
+// Taiwan, ~15 h apart, so the two calendar DATES frequently differ; every
+// absolute time shown alongside a relative one MUST carry both zone's date,
+// not just the clock time, or it actively misleads whichever of the two
+// isn't reading it in their own zone. ONE small reusable helper (accepts
+// anything `new Date()` accepts — ISO string, epoch ms, or a Date) so a
+// later batch can reuse it for per-user note timestamps.
+const TZ_TAIPEI = "Asia/Taipei";
+const TZ_PHOENIX = "America/Phoenix";
+function fmtZoned(date, timeZone) {
+  return new Intl.DateTimeFormat("zh-Hant", {
+    timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+// Returns { rel, taipei, phoenix }: `rel` is the short "3 分鐘前" label
+// (falls back to "" for an unparseable value); `taipei`/`phoenix` are each a
+// self-contained "M/D HH:mm" string in that zone — the caller supplies the
+// 台北/亞利桑那 labels so different call sites can lay them out differently.
+function formatDualTimestamp(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return { rel: "", taipei: "", phoenix: "" };
+  const diffS = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  let rel;
+  if (diffS < 60) rel = "剛剛";
+  else if (diffS < 3600) rel = Math.floor(diffS / 60) + " 分鐘前";
+  else if (diffS < 86400) rel = Math.floor(diffS / 3600) + " 小時前";
+  else rel = Math.floor(diffS / 86400) + " 天前";
+  return { rel, taipei: fmtZoned(d, TZ_TAIPEI), phoenix: fmtZoned(d, TZ_PHOENIX) };
+}
+
 function historyRowHtml(r) {
   const label = r.name || r.source || "紀錄";
   const colourLabel = COLOR_LABEL[r.colour] || "";
@@ -1324,24 +1417,25 @@ function retagPanelHtml(r) {
 
 function renderCommands() {
   const box = $("cmdLog");
-  if (!lastCommands.length) { box.innerHTML = '<div class="mut" style="padding:6px 4px">尚無紀錄</div>'; return; }
-  box.innerHTML = lastCommands.map((c) => {
+  if (!lastCommands.length) { renderIfChanged(box, '<div class="mut" style="padding:6px 4px">尚無紀錄</div>'); return; }
+  const html = lastCommands.map((c) => {
     // ADR-051 Phase 3: WHO issued this command — covers EVERY kind (pause,
     // speed, disconnect…), unlike the 歷史 actor badge which only ever shows
     // up on the three kinds that create a history record. `issued_by` is ""
     // for a pre-Phase-3 row (the table default) — render nothing, not a
     // placeholder, for those.
     const who = c.issued_by ? `<span class="cmd-user">${esc(actorLabel(c.issued_by))}</span>` : "";
+    // Dual-timezone: Zen (Arizona) / Jerry (Taiwan) alongside the existing
+    // relative label — see formatDualTimestamp().
+    const dt = formatDualTimestamp(c.created_at);
     return `
     <div class="cmd-row${c.status === "rejected" ? " rejected" : ""}">
       <div class="cmd-kind">${esc(c.kind)}<span class="cmd-status">${esc(c.status)}</span>${who}</div>
       ${c.note ? `<div class="cmd-note">${esc(c.note)}</div>` : ""}
-      <div class="cmd-time">${esc(fmtTime(c.created_at))}</div>
+      <div class="cmd-time">${esc(dt.rel)}<span class="cmd-time-abs">台北 ${esc(dt.taipei)} · 亞利桑那 ${esc(dt.phoenix)}</span></div>
     </div>`;
   }).join("");
-}
-function fmtTime(iso) {
-  try { return new Date(iso).toLocaleTimeString("zh-Hant", { hour12: false }); } catch (_) { return iso || ""; }
+  renderIfChanged(box, html);
 }
 
 // ---------------------------------------------------------------------------
@@ -1676,6 +1770,41 @@ function itemLabel(id) {
   return it ? (it.name || "収藏項目") : "収藏項目";
 }
 
+// F4: each list's open/closed state persists across reloads. Default is
+// EXPANDED for any list id not yet in the collapsed set — a first-time user
+// (or anyone who hasn't touched a chevron yet) sees exactly the pre-F4
+// behavior, every list fully shown; collapsing is an opt-in per list.
+function collCollapsedSet() {
+  try {
+    const a = JSON.parse(localStorage.getItem("flyman_coll_collapsed") || "[]");
+    return new Set(Array.isArray(a) ? a : []);
+  } catch (_) { return new Set(); }
+}
+function toggleCollList(listId) {
+  if (!listId) return;
+  const set = collCollapsedSet();
+  if (set.has(listId)) set.delete(listId); else set.add(listId);
+  try { localStorage.setItem("flyman_coll_collapsed", JSON.stringify([...set])); } catch (_) {}
+  renderCollection();
+}
+// Delegated listener on the stable #collectionList container (same pattern as
+// #deviceList above) — collapsing must not break the in-flight-send guards or
+// row actions, which live entirely in _collSending/cachedCollection state,
+// untouched by this. list-id travels via data-* (never interpolated into an
+// onclick string), matching the quote-breakout discipline used throughout
+// this file (see the comment on `teleportBtn` below).
+$("collectionList").addEventListener("click", (e) => {
+  const header = e.target.closest(".coll-list-header");
+  if (header) toggleCollList(header.dataset.listId);
+});
+$("collectionList").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const header = e.target.closest(".coll-list-header");
+  if (!header) return;
+  e.preventDefault();
+  toggleCollList(header.dataset.listId);
+});
+
 function renderCollection() {
   const box = $("collectionList");
   if (!cachedCollection.length) {
@@ -1690,10 +1819,15 @@ function renderCollection() {
     if (!byList.has(key)) byList.set(key, { name: item.list_name || "收藏清單", items: [] });
     byList.get(key).items.push(item);
   });
+  const collapsed = collCollapsedSet();
   let html = "";
-  for (const { name, items } of byList.values()) {
-    html += `<div class="coll-list-name">${esc(name)}</div>`;
-    html += items.map((item) => collectionRowHtml(item)).join("");
+  for (const [key, { name, items }] of byList.entries()) {
+    const isCollapsed = collapsed.has(key);
+    html += `<div class="coll-list-header" data-list-id="${esc(key)}" role="button" tabindex="0" aria-expanded="${isCollapsed ? "false" : "true"}">`
+      + `<span class="coll-chevron">${isCollapsed ? "▸" : "▾"}</span>`
+      + `<span class="coll-list-name">${esc(name)}</span>`
+      + `<span class="coll-list-count">${items.length}</span></div>`;
+    if (!isCollapsed) html += items.map((item) => collectionRowHtml(item)).join("");
   }
   box.innerHTML = html;
 }
@@ -1723,6 +1857,13 @@ function collectionRowHtml(item) {
   const teleportBtn = hasCoords
     ? `<button type="button" class="mini goto" data-id="${esc(String(item.id))}" ${sending ? "disabled" : ""} onclick="doCollectionTeleport(this.dataset.id)">📍 傳送</button>`
     : "";
+  // F3: copy the coordinates as plain "lat, lng" text. Mutually exclusive
+  // with startRouteBtn below exactly like teleportBtn is — only a LOCATION
+  // item (hasCoords) ever gets this; a ROUTE item has no coordinates at all
+  // (geometry is never published to the phone, ADR-049) so it must not.
+  const copyBtn = hasCoords
+    ? `<button type="button" class="mini" data-id="${esc(String(item.id))}" onclick="doCollectionCopy(this.dataset.id, this)">📋 複製</button>`
+    : "";
   const startRouteBtn = isRoute
     ? `<button type="button" class="mini goto" data-id="${esc(String(item.id))}" ${sending ? "disabled" : ""} onclick="doCollectionRouteStart(this.dataset.id)">▶️ 開始路線</button>`
     : "";
@@ -1732,7 +1873,7 @@ function collectionRowHtml(item) {
         <div class="coll-name">${esc(item.name || "収藏項目")}${kindBadge}${categoryBadge}${sharedBadge}</div>
         <div class="coll-meta">${esc(coord)}</div>
       </div>
-      ${teleportBtn}${startRouteBtn}
+      <div class="coll-actions">${teleportBtn}${copyBtn}${startRouteBtn}</div>
     </div>`;
 }
 
@@ -1748,6 +1889,42 @@ async function doCollectionTeleport(id) {
     _collSending.delete(String(id));
     renderCollection();
   }
+}
+
+// F3: copy a saved LOCATION item's coordinates as plain "lat, lng" text.
+// navigator.clipboard.writeText requires a secure context; the hidden-
+// textarea + execCommand("copy") fallback mirrors the Mac app's own
+// copyToClipboard (src/flyman/static/app.js) for non-secure contexts (e.g.
+// LAN IP access on the phone).
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) { return false; }
+}
+
+async function doCollectionCopy(id, btn) {
+  const item = cachedCollection.find((x) => String(x.id) === String(id));
+  if (!item || typeof item.lat !== "number" || typeof item.lng !== "number") return;
+  const ok = await copyTextToClipboard(`${item.lat}, ${item.lng}`);
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.textContent = ok ? "✅ 已複製" : "❌ 複製失敗";
+  btn.disabled = true;
+  setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
 }
 
 // ADR-050 #4: start a saved route from 収藏. Only `item_id` ever leaves the
