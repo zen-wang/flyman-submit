@@ -11,7 +11,9 @@
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:15px/1.5 -apple-system,"PingFang TC","Helvetica Neue",sans-serif; }
-  h1 { font-size:15px; margin:0; font-weight:700; }
+  /* F5: title block ~2x bigger (was 15px) — still wraps sanely on a narrow
+     phone since #statusStrip is already flex-wrap. */
+  h1 { font-size:30px; margin:0; font-weight:800; letter-spacing:-0.01em; line-height:1.15; }
   h2 { font-size:13px; margin:0 0 8px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.02em; }
   .wrap { padding:14px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r);
@@ -132,6 +134,18 @@
   .hist-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
   .hist-coord { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
 
+  /* --- F5: live status lines + per-user notes (title area, above the tabs'
+     own content, visible on every 路線/手機/歷史/収藏 tab) --- */
+  .status-line { font-size:13px; padding:4px 2px; }
+  .notes-grid { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
+  .note-block { border:1px solid var(--line); border-radius:10px; padding:10px; }
+  .note-head { font-size:12px; font-weight:700; color:var(--mut); text-transform:uppercase;
+               letter-spacing:.02em; margin-bottom:6px; }
+  .note-block textarea.note-edit { min-height:64px; font:14px/1.4 inherit; margin-bottom:6px; }
+  .note-readonly { font-size:14px; white-space:pre-wrap; word-break:break-word; margin-bottom:6px; }
+  .note-time { font-size:11px; }
+  .note-block button.save { width:100%; padding:8px; margin:0 0 6px; font-size:13px; }
+
   /* --- device list (手機 tab) --- */
   .device-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
                 border-bottom:1px solid rgba(128,128,128,.18); cursor:pointer; }
@@ -139,6 +153,10 @@
   .device-info { flex:1; min-width:0; }
   .device-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .device-meta { font-size:12px; color:var(--mut); }
+  /* F1: per-device owner tag picker — deliberately compact, overrides the
+     page-wide `select { width:100% }` rule above. */
+  .device-tag { flex:0 0 auto; }
+  .device-tag select { width:auto; min-width:64px; padding:6px 8px; font-size:12px; }
 
   /* --- history list (歷史 tab) --- */
   .hist-filter { margin-bottom:10px; }
@@ -152,6 +170,8 @@
   .hist-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--mut); margin-left:4px; }
   /* ADR-051 Phase 3: who issued the remote command that created this record */
   .hist-actor-badge { color:var(--blue); background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; }
+  /* F2: a subtle hint when ANOTHER user has also ticked this row's own (per-user) checkbox */
+  .hist-checked-by-badge { color:var(--green); background:rgba(52,199,89,.14); border-radius:999px; padding:1px 8px; }
   .hist-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
   .hist-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
   .mini.goto { background:var(--blue); color:#fff; border:none; }
@@ -267,6 +287,39 @@
          queue, teleport, devices, history) must NOT be visible and clickable
          against an unknown route/device/history state. -->
     <div id="mainSections" class="hide">
+
+      <!-- ============ F5: LIVE STATUS + NOTES — visible above every
+           路線/手機/歷史/収藏 tab (title area), never rebuilt wholesale on a
+           poll (see renderDeviceStatusLines/renderNotes: renderIfChanged for
+           the status lines, targeted textContent/.value writes + an
+           activeElement guard for the notes, mirroring the farmer-inputs
+           idiom) so an in-progress note edit is never clobbered mid-typing. ============ -->
+      <div class="card">
+        <h2>目前狀態</h2>
+        <div id="deviceStatusLines"><div class="mut status-line">尚未同步</div></div>
+        <div class="notes-grid">
+          <!-- Both users' blocks always exist in the DOM; setupNotesUI() (called
+               every renderNotes() pass, idempotent) shows the textarea+save button
+               for whichever one matches THIS phone's logged-in consoleUser and the
+               read-only view for the other — enforced for real Mac-side via the
+               RPC-verified issued_by, this is purely "don't invite confusion". -->
+          <div class="note-block">
+            <div class="note-head">Zen</div>
+            <textarea id="noteText-Zen" class="note-edit hide" maxlength="500" placeholder="留言給 Jerry…"></textarea>
+            <div id="noteReadonly-Zen" class="note-readonly hide"></div>
+            <button type="button" id="noteSaveBtn-Zen" class="mini save note-edit hide" onclick="doSaveNote('Zen')">💾 儲存留言</button>
+            <div id="noteTime-Zen" class="note-time mut"></div>
+          </div>
+          <div class="note-block">
+            <div class="note-head">Jerry</div>
+            <textarea id="noteText-Jerry" class="note-edit hide" maxlength="500" placeholder="留言給 Zen…"></textarea>
+            <div id="noteReadonly-Jerry" class="note-readonly hide"></div>
+            <button type="button" id="noteSaveBtn-Jerry" class="mini save note-edit hide" onclick="doSaveNote('Jerry')">💾 儲存留言</button>
+            <div id="noteTime-Jerry" class="note-time mut"></div>
+          </div>
+        </div>
+        <div id="noteStatus" class="status"></div>
+      </div>
 
       <div id="tabpane-route">
 
@@ -522,6 +575,13 @@ function reasonText(reason) {
     no_coords: "這個項目沒有座標（可能是路線）",
     bad_item_id: "項目編號格式不正確",
     no_library: "Mac 端尚未支援収藏功能",
+    bad_device: "裝置編號格式不正確",
+    bad_tag: "標籤不正確",
+    no_device_names: "Mac 端尚未支援裝置標籤",
+    no_identity: "尚未登入，無法儲存留言",
+    no_notes: "Mac 端尚未支援留言功能",
+    bad_text: "留言格式不正確",
+    text_too_long: "留言過長，請縮短後再試",
   };
   return map[reason] || ("失敗：" + reason);
 }
@@ -1178,6 +1238,8 @@ function renderAll() {
   renderMode();
   renderQueue();
   renderDevices();
+  renderDeviceStatusLines();
+  renderNotes();
   // Skip the periodic history rebuild while a 花 retag panel is open — its two
   // <select> elements have no unsaved-value guard of their own (unlike the
   // farmer inputs' activeElement check), so a mid-edit rebuild would silently
@@ -1273,6 +1335,10 @@ let deviceChecked = new Set();
 // server's `selected` field so a mid-tap poll can't clobber an in-progress
 // selection (same spirit as the farmer-inputs guard above).
 let deviceDirty = false;
+// F1: udids with an in-flight device_tag command — the picker is disabled
+// while its own request is outstanding so a double-tap can't double-send
+// (same idiom as _historyChecking below).
+let _deviceTagging = new Set();
 
 function renderDevices() {
   const devices = lastState.available_devices || [];
@@ -1283,13 +1349,19 @@ function renderDevices() {
     deviceChecked = new Set([...deviceChecked].filter((u) => liveUdids.has(u)));
   }
   const box = $("deviceList");
-  if (!devices.length) {
-    box.innerHTML = '<div class="mut" style="padding:8px 4px">找不到任何裝置 — 請確認 Mac 上的連線服務已啟動，且這支手機已經跟 Mac 用 USB 配對過一次。</div>';
-  } else {
-    box.innerHTML = devices.map((d) => deviceRowHtml(d)).join("");
-  }
+  const html = !devices.length
+    ? '<div class="mut" style="padding:8px 4px">找不到任何裝置 — 請確認 Mac 上的連線服務已啟動，且這支手機已經跟 Mac 用 USB 配對過一次。</div>'
+    : devices.map((d) => deviceRowHtml(d)).join("");
+  renderIfChanged(box, html);
   $("btnDeviceConnect").disabled = deviceChecked.size === 0;
 }
+
+// F1: the only authorized owner-tag values — mirrors #cfgUser's own
+// hardcoded Zen/Jerry <option> list (same precedent, same file) since the
+// console has no other way to learn the Mac's registered username set;
+// the Mac independently re-validates against remote_control.known_usernames()
+// regardless of what this list offers.
+const DEVICE_TAG_CHOICES = ["Zen", "Jerry"];
 
 function deviceRowHtml(d) {
   const udid = String(d.udid || "");
@@ -1297,14 +1369,62 @@ function deviceRowHtml(d) {
   const live = !!(d.selected && d.live);
   const connLabel = CONN_KIND_LABEL[d.connection] || d.connection || "—";
   const sub = [d.product_type, d.os_version].filter(Boolean).join(" · ") || "—";
+  const tag = d.tag || "";
+  const tagging = _deviceTagging.has(udid);
+  const tagOptions = ['<option value=""' + (tag === "" ? " selected" : "") + '>—</option>']
+    .concat(DEVICE_TAG_CHOICES.map((name) =>
+      `<option value="${esc(name)}"${tag === name ? " selected" : ""}>${esc(name)}</option>`
+    )).join("");
   return `<div class="device-row${checked ? " on" : ""}" data-udid="${esc(udid)}">
       <input type="checkbox" class="device-check" ${checked ? "checked" : ""} tabindex="-1">
       <div class="device-info">
         <div class="device-name">${esc(d.name || d.nickname || udid || "裝置")}</div>
         <div class="device-meta">${esc(sub)} · ${esc(connLabel)}</div>
       </div>
+      <div class="device-tag">
+        <select class="device-tag-select" data-udid="${esc(udid)}" ${tagging ? "disabled" : ""}>${tagOptions}</select>
+      </div>
       <span class="pill ${live ? "ok" : "mut"}">${live ? "已連線" : "未連線"}</span>
     </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// F5: live status line — ONE ROW PER CONNECTED (live) DEVICE. ADR-026: one
+// shared GPS/route drives every connected phone at once, so every live
+// device shows the SAME route/position, labeled by whichever person it's
+// tagged as (F1's `tag`; falls back to the device's own nickname when
+// untagged — mirrors deviceRowHtml's own fallback chain — NEVER invented).
+// `route.name` (F5, RoutePlayer.name) is "" when unknown (e.g. a route
+// loaded via the local Mac UI's manual waypoint editor, which never tracked
+// a name) — falls back to showing the live coordinate instead. Rendered via
+// renderIfChanged (poll-driven — must never cause the scroll-jump regression
+// Batch A fixed) and built with esc() throughout, same as every other
+// server-sourced string in this file.
+// ---------------------------------------------------------------------------
+function deviceStatusLabel(d) {
+  return d.tag || d.nickname || d.name || "裝置";
+}
+
+function deviceStatusLineHtml(d) {
+  const label = esc(deviceStatusLabel(d));
+  const route = lastState.route || {};
+  const lat = typeof lastState.lat === "number" ? lastState.lat.toFixed(6) : "—";
+  const lng = typeof lastState.lng === "number" ? lastState.lng.toFixed(6) : "—";
+  if ((route.mode === "playing" || route.mode === "paused") && route.name) {
+    const verb = route.mode === "playing" ? "正在走" : "暫停於";
+    return `<div class="status-line">${label} — ${verb}「${esc(route.name)}」</div>`;
+  }
+  return `<div class="status-line">${label} — 位於 (${lat}, ${lng})</div>`;
+}
+
+function renderDeviceStatusLines() {
+  const box = $("deviceStatusLines");
+  if (!box) return;
+  const live = (lastState.available_devices || []).filter((d) => d.live);
+  const html = live.length
+    ? live.map(deviceStatusLineHtml).join("")
+    : '<div class="mut status-line">目前沒有連線中的裝置</div>';
+  renderIfChanged(box, html);
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,6 +1492,76 @@ function formatDualTimestamp(value) {
   return { rel, taipei: fmtZoned(d, TZ_TAIPEI), phoenix: fmtZoned(d, TZ_PHOENIX) };
 }
 
+// ---------------------------------------------------------------------------
+// F5: per-user title-block notes — ONE note per authorized console username,
+// each Mac-stamped with a last-edited time (shown in BOTH zones via
+// formatDualTimestamp above). Reuses DEVICE_TAG_CHOICES (F1's own "the
+// console has no way to learn the Mac's registered username set" list —
+// see its comment above `deviceRowHtml`) rather than inventing a second
+// hardcoded Zen/Jerry list; the Mac independently re-validates the AUTHOR
+// via the RPC-verified issued_by regardless of what this list offers.
+//
+// The note blocks are STATIC markup (both users always in the DOM — see the
+// HTML) specifically so a poll never rebuilds the editing textarea's DOM
+// node: renderNotes() below only ever WRITES `.value`/`.textContent` on the
+// existing nodes, guarded by `document.activeElement !== ta` for the
+// editable one — the exact idiom `renderMode()`'s farmerBase/farmerStep/
+// farmerLoops guard already uses — so typing a note is never clobbered by
+// the next 1.5 s poll. textContent (not innerHTML) is used for the
+// read-only/timestamp writes, which is a STRONGER guarantee than esc()ing
+// into innerHTML (the browser never interprets it as markup at all).
+// ---------------------------------------------------------------------------
+const NOTE_MAX_LENGTH = 500; // mirrors flyman.console_notes.MAX_NOTE_LENGTH
+
+function setupNotesUI() {
+  const { consoleUser } = cfg();
+  DEVICE_TAG_CHOICES.forEach((u) => {
+    const mine = u === consoleUser;
+    $(`noteText-${u}`).classList.toggle("hide", !mine);
+    $(`noteSaveBtn-${u}`).classList.toggle("hide", !mine);
+    $(`noteReadonly-${u}`).classList.toggle("hide", mine);
+  });
+}
+
+function renderNotes() {
+  setupNotesUI();
+  const { consoleUser } = cfg();
+  const notes = lastState.notes || {};
+  DEVICE_TAG_CHOICES.forEach((u) => {
+    const entry = notes[u];
+    const text = entry && typeof entry.text === "string" ? entry.text : "";
+    if (u === consoleUser) {
+      const ta = $(`noteText-${u}`);
+      if (document.activeElement !== ta) ta.value = text; // focus-guard, see comment above
+    } else {
+      $(`noteReadonly-${u}`).textContent = text || "（尚未留言）";
+    }
+    const dt = entry ? formatDualTimestamp(entry.updated_at) : null;
+    $(`noteTime-${u}`).textContent = (dt && dt.taipei)
+      ? `最後更新：台北 ${dt.taipei}・亞利桑那 ${dt.phoenix}（${dt.rel}）`
+      : "尚未留言過";
+  });
+}
+
+async function doSaveNote(username) {
+  const ta = $(`noteText-${username}`);
+  const text = ta.value;
+  if (text.length > NOTE_MAX_LENGTH) {
+    flash("noteStatus", false, `留言過長（上限 ${NOTE_MAX_LENGTH} 字，目前 ${text.length} 字）`);
+    return;
+  }
+  await sendCommand("set_note", { text }, $(`noteSaveBtn-${username}`), "noteStatus");
+}
+
+// F2: the done checkbox is PER-USER — `r.checked_by` is the full list of
+// usernames who have ticked this record (published verbatim, see
+// remote_control._HISTORY_PUBLISHED_KEYS' `checked_by`). `r.checked` alone is
+// only ever the MAC OWNER's own tick (the Mac app's local view) and must NOT
+// drive this console's checkbox — each logged-in console identity renders and
+// toggles ITS OWN entry in `checked_by`.
+function _checkedByList(r) { return Array.isArray(r.checked_by) ? r.checked_by : []; }
+function _isCheckedByMe(r) { const { consoleUser } = cfg(); return _checkedByList(r).includes(consoleUser); }
+
 function historyRowHtml(r) {
   const label = r.name || r.source || "紀錄";
   const colourLabel = COLOR_LABEL[r.colour] || "";
@@ -1382,14 +1572,23 @@ function historyRowHtml(r) {
   // as nothing, not a placeholder, so old rows look exactly as before.
   const actorTag = r.actor
     ? `<span class="hist-badge hist-actor-badge">${esc(actorLabel(r.actor))}</span>` : "";
+  const { consoleUser } = cfg();
+  const checkedBy = _checkedByList(r);
+  const mine = checkedBy.includes(consoleUser);
+  // F2 (nice-to-have, not required): a subtle hint when someone ELSE has also
+  // ticked this row — never my own name (that's the checkbox itself).
+  const others = checkedBy.filter((u) => u !== consoleUser);
+  const othersTag = others.length
+    ? `<span class="hist-badge hist-checked-by-badge" title="也已勾選">✓ ${esc(others.map(actorLabel).join("、"))}</span>`
+    : "";
   const coord = (typeof r.lat === "number" && typeof r.lng === "number")
     ? `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}` : "—";
   const checking = _historyChecking.has(+r.id);
-  return `<div class="hist-row${r.checked ? " done" : ""}">
-      <input type="checkbox" class="hist-check" ${r.checked ? "checked" : ""}${checking ? " disabled" : ""}
+  return `<div class="hist-row${mine ? " done" : ""}">
+      <input type="checkbox" class="hist-check" ${mine ? "checked" : ""}${checking ? " disabled" : ""}
              onchange="doHistoryCheck(${+r.id}, this.checked, this)">
       <div class="hist-info">
-        <div class="hist-name">${esc(label)}${tag}${actorTag}</div>
+        <div class="hist-name">${esc(label)}${tag}${actorTag}${othersTag}</div>
         <div class="hist-meta">${esc(coord)} · <span title="${esc(fmtAbsTime(r.ts))}">${esc(relTime(r.ts))}</span></div>
       </div>
       <div class="hist-actions">
@@ -1607,9 +1806,18 @@ function pickSearchResult(i) {
 // pattern) — deviceRowHtml() rebuilds the whole list's innerHTML on every
 // render, so a listener bound to an individual row would be lost each time.
 $("deviceList").addEventListener("click", (e) => {
+  if (e.target.closest(".device-tag")) return; // F1: the tag picker doesn't toggle selection
   const row = e.target.closest(".device-row");
   if (!row) return;
   toggleDeviceChecked(row.dataset.udid);
+});
+// F1: change (not click) — a <select> commits via its native picker, and this
+// must NOT also bubble into the row-click handler above (excluded via the
+// .device-tag closest() check there).
+$("deviceList").addEventListener("change", (e) => {
+  const sel = e.target.closest(".device-tag-select");
+  if (!sel) return;
+  doDeviceTag(sel.dataset.udid, sel.value, sel);
 });
 function toggleDeviceChecked(udid) {
   deviceDirty = true;
@@ -1643,6 +1851,41 @@ async function doDeviceDisconnect() {
   deviceDirty = false;
 }
 
+// F1: tag a device with which person's account is running it. Optimistic +
+// revert-on-failure, mirroring doHistoryCheck's idiom exactly (mutate the
+// cached object synchronously so the picker never flickers back before the
+// network call resolves, undo directly on the element on any failure — no
+// full renderDevices() rebuild here, so an in-progress tap on ANOTHER row
+// can't be yanked out from under the user).
+async function doDeviceTag(udid, tag, el) {
+  if (!udid) return;
+  const d = (lastState.available_devices || []).find((x) => x.udid === udid);
+  const prevTag = d ? (d.tag || "") : "";
+  const revert = () => { if (d) d.tag = prevTag; if (el) el.value = prevTag; };
+  if (d) d.tag = tag;
+  _deviceTagging.add(udid);
+  if (el) el.disabled = true;
+  try {
+    const { consoleUser, consolePin } = cfg();
+    const res = await rpc("flyman_remote_command", {
+      p_username: consoleUser, p_pin: consolePin, p_kind: "device_tag", p_payload: { device: udid, tag },
+    });
+    if (!res.ok) {
+      handleAuthFail(res.reason);
+      revert();
+      flash("deviceStatus", false, "❌ " + reasonText(res.reason));
+      return;
+    }
+    flash("deviceStatus", true, "✅ 已更新");
+  } catch (err) {
+    revert();
+    flash("deviceStatus", false, "❌ " + err.message);
+  } finally {
+    _deviceTagging.delete(udid);
+    if (el) el.disabled = false;
+  }
+}
+
 // --- history (歷史 tab) ---
 function setHistoryFilter(which) {
   historyFilter = which;
@@ -1666,18 +1909,30 @@ function histLabel(id) {
   return r ? (r.name || r.source || ("#" + id)) : ("#" + id);
 }
 
+// F2: mutate MY OWN entry in `checked_by` (add/remove `consoleUser`) — never
+// the other users' entries. Returns a NEW array (checked_by itself is never
+// mutated in place).
+function _toggleCheckedBy(checkedBy, user, add) {
+  const set = new Set(checkedBy);
+  if (add) set.add(user); else set.delete(user);
+  return [...set].sort();
+}
+
 // Optimistic + revert-on-failure, exactly like docs/submit/index.html's
 // doToggleCheck: mutate the cached record synchronously so the checkbox never
 // flickers back before the network call resolves, then undo on any failure.
 async function doHistoryCheck(id, checked, el) {
   const label = histLabel(id);
   const rec = cachedHistory.find((r) => +r.id === +id);
-  const revert = () => { if (rec) rec.checked = !checked; if (el) el.checked = !checked; };
-  if (rec) rec.checked = checked;
+  const { consoleUser, consolePin } = cfg();
+  const revert = () => {
+    if (rec) rec.checked_by = _toggleCheckedBy(_checkedByList(rec), consoleUser, !checked);
+    if (el) el.checked = !checked;
+  };
+  if (rec) rec.checked_by = _toggleCheckedBy(_checkedByList(rec), consoleUser, checked);
   _historyChecking.add(+id);
   if (el) el.disabled = true;
   try {
-    const { consoleUser, consolePin } = cfg();
     const res = await rpc("flyman_remote_command", {
       p_username: consoleUser, p_pin: consolePin, p_kind: "history_check", p_payload: { id: +id, checked },
     });
