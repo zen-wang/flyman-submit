@@ -6,61 +6,135 @@
 <title>flyman — 遠端控制</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e9ef; --mut:#9aa3b2;
-          --blue:#2f7bff; --green:#2fbf6b; --red:#e5484d; --r:12px; }
+  :root {
+    --blue:#007aff; --indigo:#5856d6; --green:#34c759; --orange:#ff9500;
+    --red:#ff3b30; --yellow:#ffcc00; --pink:#ff2d55;
+    /* F3: text-only tone variants — --green/--red stay as-is for tinted pill
+       BACKGROUNDS (rgba(52,199,89,.16) etc.), these are for foreground TEXT
+       only, where the raw iOS green/red fail contrast on the near-white card. */
+    --green-text: hsl(135, 65%, 30%);
+    --red-text:   hsl(5, 80%, 44%);
+
+    --label-1: hsl(220 18% 11%);
+    --label-2: hsla(220, 18%, 25%, 0.78);
+    /* alpha 0.85, not the Mac app's 0.55: on this near-white card 0.55 computes
+       to 2.7:1, which fails WCAG AA and REGRESSES on the old dark-only console
+       (6.6:1). This token carries real metadata (coords, times, #pillConn) on a
+       phone used outdoors, so it is raised to 5.5:1 while staying visibly muted. */
+    --label-3: hsla(220, 14%, 32%, 0.85);
+    --label-4: hsla(220, 12%, 38%, 0.35);
+
+    --bg:            #e9e6e0;
+    --card:          hsla(0, 0%, 100%, 0.92);
+    --surface-solid: #fbfaf8;
+    --btn-fill:      hsla(0, 0%, 100%, 0.62);
+    --field:         hsla(0, 0%, 100%, 0.55);
+    --stroke:        hsla(220, 18%, 30%, 0.16);
+    --glass-stroke:  hsla(0, 0%, 100%, 0.78);
+    --fill-2:        rgba(0, 0, 0, 0.05);
+    --seg-track:     hsla(220, 15%, 50%, 0.10);
+
+    --r-card:26px; --r-pill:999px; --r-button:18px; --r-inner:14px; --r-tiny:10px;
+
+    --card-shadow:
+        0 1px 0 0 hsla(0, 0%, 100%, 0.55) inset,
+        0 10px 24px -12px hsla(220, 50%, 15%, 0.22),
+        0 1px 2px hsla(220, 30%, 15%, 0.06);
+    --shadow-primary: 0 1px 0 hsla(0,0%,100%,0.25) inset, 0 1px 3px hsla(210,100%,40%,0.30), 0 4px 12px -2px hsla(210,100%,40%,0.40);
+    --shadow-danger:  0 1px 0 hsla(0,0%,100%,0.20) inset, 0 1px 3px hsla(5,100%,40%,0.30),  0 4px 12px -2px hsla(5,100%,50%,0.35);
+    --shadow-green:   0 1px 0 hsla(0,0%,100%,0.25) inset, 0 1px 3px hsla(135,60%,35%,0.30), 0 4px 12px -2px hsla(135,60%,40%,0.35);
+
+    --spring: cubic-bezier(0.32, 0.72, 0, 1);
+    --snap:   cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --label-1: hsla(220, 14%, 95%, 1);
+      --label-2: hsla(220, 12%, 88%, 0.82);
+      --label-3: hsla(220, 12%, 80%, 0.60);
+      --label-4: hsla(220, 10%, 72%, 0.40);
+      --indigo:  #7d7aff;
+      --green-text: var(--green);
+      --red-text:   var(--red);
+
+      --bg:            hsl(220, 18%, 8%);
+      --card:          hsl(220, 16%, 15%);
+      --surface-solid: hsl(220, 16%, 13%);
+      --btn-fill:      hsla(220, 16%, 22%, 0.62);
+      --field:         hsla(220, 16%, 22%, 0.40);
+      --stroke:        hsla(220, 30%, 78%, 0.20);
+      --glass-stroke:  hsla(220, 30%, 78%, 0.28);
+      --fill-2:        rgba(255, 255, 255, 0.07);
+      --seg-track:     hsla(220, 16%, 12%, 0.5);
+
+      --card-shadow:
+          0 1px 0 0 hsla(220, 30%, 88%, 0.16) inset,
+          0 10px 24px -12px hsla(0, 0%, 0%, 0.45),
+          0 1px 2px hsla(0, 0%, 0%, 0.22);
+    }
+  }
+
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:15px/1.5 -apple-system,"PingFang TC","Helvetica Neue",sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--label-1);
+         font:15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Helvetica Neue", sans-serif;
+         letter-spacing:-0.005em; }
   /* F5: title block ~2x bigger (was 15px) — still wraps sanely on a narrow
-     phone since #statusStrip is already flex-wrap. */
-  h1 { font-size:30px; margin:0; font-weight:800; letter-spacing:-0.01em; line-height:1.15; }
-  h2 { font-size:13px; margin:0 0 8px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.02em; }
+     phone since #statusStrip is already flex-wrap. Serif italic, no webfont —
+     Georgia is the real renderer (Phase 3 restyle). */
+  h1 { font-family:"Instrument Serif", Georgia, -apple-system, serif; font-weight:400; font-style:italic;
+       font-size:28px; margin:0; line-height:1.15; letter-spacing:-0.02em; }
+  h2 { font-size:11px; margin:0 0 8px; font-weight:600; color:var(--label-3); text-transform:uppercase; letter-spacing:.10em; }
   .wrap { padding:14px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r);
-          padding:14px; margin-bottom:12px; }
-  label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
-  input, select { width:100%; padding:10px; border:1px solid var(--line); border-radius:10px;
-                    background:#12151b; color:var(--fg); font-size:15px; font-family:inherit; }
+  .card { background:var(--card); border:0.5px solid var(--glass-stroke); border-radius:var(--r-card);
+          box-shadow:var(--card-shadow); padding:16px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--label-2); margin:10px 0 4px; }
+  input, select { width:100%; padding:10px; border:0.5px solid var(--stroke); border-radius:var(--r-tiny);
+                    background:var(--field); color:var(--label-1); font-size:15px; font-family:inherit; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline:none; border-color:var(--blue); box-shadow:0 0 0 3px hsla(210,100%,50%,0.18); }
   button { font-family:inherit; cursor:pointer; }
-  button.act { width:100%; padding:12px; border:none; border-radius:10px; color:#fff;
-               font-size:15px; font-weight:700; margin-top:12px; }
-  button.act:disabled { opacity:.35; }
-  .save { background:var(--blue); }
-  .stop { background:var(--red); }
-  .status { margin-top:10px; font-size:13px; min-height:18px; }
-  .ok { color:var(--green); } .err { color:var(--red); } .mut { color:var(--mut); }
+  button:active { transform:scale(0.97); }
+  button.act { width:100%; padding:12px; border:none; border-radius:var(--r-pill); color:#fff;
+               font-size:15px; font-weight:600; margin-top:12px; }
+  button.act:disabled { opacity:.45; }
+  .save { background:var(--blue); box-shadow:var(--shadow-primary); }
+  .stop { background:var(--red); box-shadow:var(--shadow-danger); }
+  .status { margin-top:10px; font-size:13px; min-height:18px; color:var(--label-1); }
+  .ok { color:var(--green-text); } .err { color:var(--red-text); } .mut { color:var(--label-3); }
   .hide { display:none !important; }
-  .hint { font-size:12px; color:var(--mut); margin-top:8px; }
+  .hint { font-size:12px; color:var(--label-3); margin-top:8px; }
 
   /* --- sticky status strip --- */
-  #statusStrip { position:sticky; top:0; z-index:20; background:var(--card);
-                 border-bottom:1px solid var(--line); padding:10px 14px;
+  #statusStrip { position:sticky; top:0; z-index:20; background:var(--surface-solid);
+                 border-bottom:0.5px solid var(--stroke); padding:10px 14px;
                  display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
-  .pill { display:inline-flex; align-items:center; padding:3px 10px; border-radius:999px;
+  .pill { display:inline-flex; align-items:center; padding:3px 10px; border-radius:var(--r-pill);
           font-size:12px; font-weight:600; white-space:nowrap; }
-  .pill.ok { background:rgba(47,191,107,.16); color:var(--green); }
-  .pill.err { background:rgba(229,72,77,.16); color:var(--red); }
-  .pill.mut { background:rgba(154,163,178,.16); color:var(--mut); }
-  #statusCoord { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; width:100%; order:99; }
+  .pill.ok { background:rgba(52,199,89,.16); color:var(--green-text); }
+  .pill.err { background:rgba(255,59,48,.14); color:var(--red-text); }
+  .pill.mut { background:var(--fill-2); color:var(--label-3); }
+  #statusCoord { font-size:12px; color:var(--label-3); font-variant-numeric:tabular-nums; width:100%; order:99; }
 
   /* --- map --- */
-  #map { height:240px; border-radius:10px; margin-bottom:8px; background:#12151b; }
+  #map { height:240px; border-radius:var(--r-inner); margin-bottom:8px; background:var(--field); }
   .follow-btn { display:none; }
   .follow-btn.show { display:block; }
 
   /* --- node strip --- */
   .node-strip { display:flex; overflow-x:auto; gap:6px; padding:4px 2px; -webkit-overflow-scrolling:touch; }
-  .node-chip { flex:0 0 auto; padding:6px 12px; border-radius:20px; background:#12151b;
-               border:1px solid var(--line); color:var(--mut); font-size:13px;
+  .node-chip { flex:0 0 auto; padding:6px 12px; border-radius:var(--r-pill); background:var(--seg-track);
+               border:none; color:var(--label-2); font-size:13px;
                font-variant-numeric:tabular-nums; }
-  .node-chip.on { background:var(--blue); color:#fff; border-color:var(--blue); font-weight:700; }
+  .node-chip.on { background:var(--blue); color:#fff; font-weight:700; }
 
   /* --- segmented buttons (transport / mode) --- */
-  .seg { display:flex; gap:6px; }
-  .seg button { flex:1; padding:11px 6px; border:1px solid var(--line); background:#12151b;
-                color:var(--fg); border-radius:10px; font-size:14px; font-weight:600; }
-  .seg button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
-  .seg button:disabled { opacity:.35; }
+  .seg { display:flex; gap:2px; background:var(--seg-track); border-radius:var(--r-tiny); padding:2px; }
+  .seg button { flex:1; padding:9px 6px; border:none; background:transparent;
+                color:var(--label-2); border-radius:calc(var(--r-tiny) - 2px); font-size:14px; font-weight:500; }
+  .seg button.on { background:hsla(0,0%,100%,.9); color:var(--label-1); font-weight:600;
+                   box-shadow:0 1px 3px hsla(220,30%,15%,.12); }
+  .seg button:disabled { opacity:.45; }
   .seg.transport button.pause { }
   .seg.transport button.resume { }
 
@@ -68,91 +142,106 @@
   .fp-row3 > div { flex:1; }
   .fp-row3 label { margin:0 0 4px; }
 
-  .mini { padding:8px 12px; border:1px solid var(--line); border-radius:10px;
-          background:#12151b; color:var(--fg); font-size:13px; font-weight:600; }
+  .mini { padding:8px 12px; border:0.5px solid var(--stroke); border-radius:var(--r-pill);
+          background:var(--btn-fill); color:var(--label-1); font-size:13px; font-weight:500; }
   .mini.danger { background:var(--red); color:#fff; border:none; }
 
   /* --- speed stepper (ADR-050 #2: numeric −/+ instead of a slider) --- */
   .speed-stepper { display:flex; align-items:center; gap:8px; }
   .speed-stepper button.mini { flex:0 0 auto; padding:10px 16px; font-size:18px; line-height:1; }
-  .speed-stepper input[type=number] { width:84px; flex:0 0 auto; text-align:center; }
+  .speed-stepper input[type=number] { width:84px; flex:0 0 auto; text-align:center; font-size:18px;
+                                       font-family:ui-monospace,"SF Mono",Menlo,monospace; }
   .speed-stepper .unit { flex:0 0 auto; font-size:14px; }
 
   /* --- queue --- */
-  .queue-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
-               border-bottom:1px solid rgba(128,128,128,.18); }
-  .queue-row.on .queue-name { color:var(--green); }
+  .queue-row { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:6px;
+               background:var(--field); border:0.5px solid var(--stroke); border-radius:var(--r-inner); }
+  .queue-row.on .queue-name { color:var(--green-text); }
   .queue-info { flex:1; min-width:0; }
   .queue-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .queue-meta { font-size:12px; color:var(--mut); }
-  .badge-playing { display:inline-block; font-size:11px; font-weight:600; color:var(--green); margin-left:6px; }
+  .queue-meta { font-size:12px; color:var(--label-3); }
+  .badge-playing { display:inline-block; font-size:11px; font-weight:600; color:var(--green-text); margin-left:6px; }
 
   /* --- search results --- */
   #searchResults { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
-  .search-result { text-align:left; padding:10px; border:1px solid var(--line); border-radius:10px;
-                   background:#12151b; color:var(--fg); font-size:13px; }
+  .search-result { text-align:left; padding:8px 10px; border:0.5px solid var(--stroke); border-radius:var(--r-inner);
+                   background:var(--field); color:var(--label-1); font-size:13px; }
 
   /* --- feedback log --- */
-  .cmd-row { padding:8px 4px; border-bottom:1px solid rgba(128,128,128,.18); }
-  .cmd-row.rejected { background:rgba(229,72,77,.08); }
+  .cmd-row { padding:8px 10px; margin-bottom:6px; background:var(--field);
+             border:0.5px solid var(--stroke); border-radius:var(--r-inner); }
+  .cmd-row.rejected { background:rgba(255,59,48,.08); }
   .cmd-kind { font-size:13px; font-weight:600; }
-  .cmd-status { font-size:12px; font-weight:500; color:var(--mut); margin-left:6px; }
+  .cmd-status { font-size:12px; font-weight:500; color:var(--label-3); margin-left:6px; }
   .cmd-row.rejected .cmd-status { color:var(--red); }
   /* ADR-051 Phase 3: who issued this command (every kind, not just the ones
      that create a history record) */
   .cmd-user { display:inline-block; font-size:11px; font-weight:600; color:var(--blue);
-              background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; margin-left:6px; }
-  .cmd-note { font-size:12px; color:var(--mut); margin-top:2px; }
-  .cmd-time { font-size:11px; color:var(--mut); margin-top:2px; font-variant-numeric:tabular-nums; }
+              background:rgba(0,122,255,.14); border-radius:var(--r-pill); padding:1px 8px; margin-left:6px; }
+  .cmd-note { font-size:12px; color:var(--label-3); margin-top:2px; }
+  .cmd-time { font-size:11px; color:var(--label-3); margin-top:2px; font-variant-numeric:tabular-nums; }
   /* dual-timezone (Zen=Arizona / Jerry=Taiwan) absolute times, under the
      existing relative-time label — wraps freely on a narrow phone screen. */
   .cmd-time-abs { display:block; margin-top:1px; opacity:.85; }
 
-  .never-synced { text-align:center; padding:24px 14px; color:var(--mut); font-size:14px; }
+  /* Row-lets (queue/search/cmd here; device/hist/coll get their own dark
+     override further down, next to their light-mode rule) use a
+     translucent-white hairline that needs to go near-invisible in dark mode
+     (a light-mode hairline on a dark fill reads as a bright ring). */
+  @media (prefers-color-scheme: dark) {
+    .queue-row, .search-result, .cmd-row { border-color:hsla(0,0%,100%,.06); }
+  }
+
+  .never-synced { text-align:center; padding:24px 14px; color:var(--label-3); font-size:14px; }
 
   /* --- tabs (路線 / 手機 / 歷史 [ADR-046] / 収藏 [ADR-047]) --- */
-  .tabs { display:flex; gap:6px; margin-bottom:12px; }
-  .tabs button { flex:1; padding:9px; border:1px solid var(--line); background:var(--card);
-                 color:var(--mut); border-radius:var(--r); font-weight:600; font-size:14px; }
-  .tabs button.on { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .tabs { display:flex; gap:2px; margin-bottom:12px; background:var(--seg-track); border-radius:var(--r-tiny); padding:2px; }
+  .tabs button { flex:1; padding:8px 4px; border:none; background:transparent;
+                 color:var(--label-2); border-radius:calc(var(--r-tiny) - 2px); font-weight:500; font-size:14px; }
+  .tabs button.on { color:var(--label-1); background:hsla(0,0%,100%,.9); font-weight:600;
+                    box-shadow:0 1px 3px hsla(220,30%,15%,.12); }
+  @media (prefers-color-scheme: dark) {
+    .seg button.on, .tabs button.on { background:hsla(220,16%,32%,.9); }
+  }
 
   /* --- 送出路線 (PIN) tab: paste-a-route form + preview map --- */
-  textarea { width:100%; padding:10px; border:1px solid var(--line); border-radius:10px;
-             background:#12151b; color:var(--fg); font-family:inherit;
-             min-height:120px; resize:vertical; font:13px/1.4 ui-monospace,Menlo,monospace; }
+  textarea { width:100%; padding:10px; border:0.5px solid var(--stroke); border-radius:var(--r-tiny);
+             background:var(--field); color:var(--label-1);
+             min-height:120px; resize:vertical; font:13px/1.4 ui-monospace,"SF Mono",Menlo,monospace; }
   .raw-tools { display:flex; gap:8px; margin-top:8px; }
   .raw-tools .mini { flex:1; }
   .fp-row { display:flex; gap:8px; }
   .fp-row select { flex:1; }
-  .parse { background:#39414f; }
-  .send { background:var(--green); }
-  #sendMap { height:220px; border-radius:10px; margin-top:12px; display:none; }
+  button.parse { background:var(--btn-fill); color:var(--label-1); box-shadow:none; border:0.5px solid var(--stroke); }
+  .send { background:var(--green); box-shadow:var(--shadow-green); }
+  #sendMap { height:220px; border-radius:var(--r-inner); margin-top:12px; display:none; }
 
   /* --- 花田歷史 (PIN) tab: shown only when no console identity is configured,
          see updateTabVisibility() — reuses the 歷史-tab's .hist-* rules below
          (identical row/badge/checkbox look for both), plus this list-only header. --- */
   .hist-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
-  .hist-coord { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .hist-coord { font-size:12px; color:var(--label-3); font-variant-numeric:tabular-nums; }
 
   /* --- F5: live status lines + per-user notes (title area, above the tabs'
      own content, visible on every 路線/手機/歷史/収藏 tab) --- */
   .status-line { font-size:13px; padding:4px 2px; }
   .notes-grid { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
-  .note-block { border:1px solid var(--line); border-radius:10px; padding:10px; }
-  .note-head { font-size:12px; font-weight:700; color:var(--mut); text-transform:uppercase;
-               letter-spacing:.02em; margin-bottom:6px; }
+  .note-block { background:var(--fill-2); border:none; border-radius:var(--r-inner); padding:10px; }
+  .note-head { font-size:11px; font-weight:600; color:var(--label-3); text-transform:uppercase;
+               letter-spacing:.10em; margin-bottom:6px; }
   .note-block textarea.note-edit { min-height:64px; font:14px/1.4 inherit; margin-bottom:6px; }
-  .note-readonly { font-size:14px; white-space:pre-wrap; word-break:break-word; margin-bottom:6px; }
-  .note-time { font-size:11px; }
+  .note-readonly { font-size:14px; white-space:pre-wrap; word-break:break-word; margin-bottom:6px; color:var(--label-1); }
+  .note-time { font-size:11px; color:var(--label-3); }
   .note-block button.save { width:100%; padding:8px; margin:0 0 6px; font-size:13px; }
 
   /* --- device list (手機 tab) --- */
-  .device-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
-                border-bottom:1px solid rgba(128,128,128,.18); cursor:pointer; }
+  .device-row { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:6px;
+                background:var(--field); border:0.5px solid var(--stroke); border-radius:var(--r-inner);
+                cursor:pointer; }
   .device-check { flex:0 0 auto; width:20px; height:20px; accent-color:var(--blue); pointer-events:none; }
   .device-info { flex:1; min-width:0; }
   .device-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .device-meta { font-size:12px; color:var(--mut); }
+  .device-meta { font-size:12px; color:var(--label-3); }
   /* F1: per-device owner tag picker — deliberately compact, overrides the
      page-wide `select { width:100% }` rule above. */
   .device-tag { flex:0 0 auto; }
@@ -160,18 +249,18 @@
 
   /* --- history list (歷史 tab) --- */
   .hist-filter { margin-bottom:10px; }
-  .hist-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
-              border-bottom:1px solid rgba(128,128,128,.18); }
-  .hist-row.done .hist-name { color:var(--mut); text-decoration:line-through; }
+  .hist-row { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:6px;
+              background:var(--field); border:0.5px solid var(--stroke); border-radius:var(--r-inner); }
+  .hist-row.done .hist-name { color:var(--label-3); text-decoration:line-through; }
   .hist-check { flex:0 0 auto; width:22px; height:22px; accent-color:var(--green); }
   .hist-info { flex:1; min-width:0; }
   .hist-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .hist-meta { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
-  .hist-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--mut); margin-left:4px; }
+  .hist-meta { font-size:12px; color:var(--label-3); font-variant-numeric:tabular-nums; }
+  .hist-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--label-3); margin-left:4px; }
   /* ADR-051 Phase 3: who issued the remote command that created this record */
-  .hist-actor-badge { color:var(--blue); background:rgba(58,130,255,.14); border-radius:999px; padding:1px 8px; }
+  .hist-actor-badge { color:var(--blue); background:rgba(0,122,255,.14); border-radius:var(--r-pill); padding:1px 8px; }
   /* F2: a subtle hint when ANOTHER user has also ticked this row's own (per-user) checkbox */
-  .hist-checked-by-badge { color:var(--green); background:rgba(52,199,89,.14); border-radius:999px; padding:1px 8px; }
+  .hist-checked-by-badge { color:var(--green-text); background:rgba(52,199,89,.14); border-radius:var(--r-pill); padding:1px 8px; }
   .hist-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
   .hist-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
   .mini.goto { background:var(--blue); color:#fff; border:none; }
@@ -186,28 +275,33 @@
   .coll-list-header { display:flex; align-items:center; gap:8px; cursor:pointer;
                        padding:8px 4px; margin:14px 0 2px; border-radius:8px; }
   .coll-list-header:first-child { margin-top:0; }
-  .coll-list-header:hover { background:rgba(128,128,128,.08); }
+  .coll-list-header:hover { background:var(--fill-2); }
   .coll-list-header:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
-  .coll-chevron { flex:0 0 auto; width:14px; text-align:center; color:var(--mut); font-size:12px; }
-  .coll-list-name { font-size:13px; font-weight:700; color:var(--mut); text-transform:uppercase;
-                     letter-spacing:.02em; }
-  .coll-list-count { margin-left:auto; font-size:12px; color:var(--mut); }
-  .coll-row { display:flex; align-items:center; gap:10px; padding:10px 4px;
-              border-bottom:1px solid rgba(128,128,128,.18); }
+  .coll-chevron { flex:0 0 auto; width:14px; text-align:center; color:var(--label-3); font-size:12px; }
+  .coll-list-name { font-size:11px; font-weight:600; color:var(--label-3); text-transform:uppercase;
+                     letter-spacing:.10em; }
+  .coll-list-count { margin-left:auto; font-size:12px; color:var(--label-3); }
+  .coll-row { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:6px;
+              background:var(--field); border:0.5px solid var(--stroke); border-radius:var(--r-inner); }
   /* A1: roughly doubled from 48px so a saved-point photo is actually
      previewable; object-fit:cover keeps the square crop (no squashing). */
-  .coll-photo { width:96px; height:96px; border-radius:10px; object-fit:cover;
-                background:#12151b; flex:0 0 auto; }
+  .coll-photo { width:96px; height:96px; border-radius:var(--r-tiny); object-fit:cover;
+                background:var(--field); flex:0 0 auto; }
   .coll-photo.empty { display:flex; align-items:center; justify-content:center;
-                       color:var(--mut); font-size:32px; border:1px dashed var(--line); }
+                       color:var(--label-3); font-size:32px; border:1px dashed var(--stroke); }
   .coll-info { flex:1; min-width:0; }
   .coll-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .coll-meta { font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
-  .coll-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--mut); margin-left:4px; }
+  .coll-meta { font-size:12px; color:var(--label-3); font-variant-numeric:tabular-nums; }
+  .coll-badge { display:inline-block; font-size:11px; font-weight:500; color:var(--label-3); margin-left:4px; }
   /* F3: 傳送 + 複製 (location) or just 開始路線 (route) stack vertically —
      mirrors .hist-actions — so the wider photo still leaves room for text. */
   .coll-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
   .coll-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
+
+  /* dark-mode hairline for the row-lets introduced further up (device/hist/coll) */
+  @media (prefers-color-scheme: dark) {
+    .device-row, .hist-row, .coll-row { border-color:hsla(0,0%,100%,.06); }
+  }
 </style>
 </head>
 <body>
