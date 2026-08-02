@@ -216,6 +216,19 @@
   .send { background:var(--green); box-shadow:var(--shadow-green); }
   #sendMap { height:220px; border-radius:var(--r-inner); margin-top:12px; display:none; }
 
+  /* --- ⏳ 待定路線 card (送出路線 tab) --- */
+  #pendingMap { height:220px; border-radius:var(--r-inner); margin-top:12px; display:none; }
+  .pending-row { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:6px;
+                 background:var(--field); border:0.5px solid var(--stroke); border-radius:var(--r-inner); }
+  .pending-info { flex:1; min-width:0; }
+  .pending-name { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pending-meta { font-size:12px; color:var(--label-3); }
+  .pending-date { font-size:12px; color:var(--label-3); margin-top:2px; }
+  .pending-expired { display:inline-block; font-size:11px; font-weight:600; color:#fff; background:var(--red);
+                      border-radius:var(--r-pill); padding:1px 8px; margin-left:6px; }
+  .pending-actions { display:flex; flex-direction:column; gap:4px; flex:0 0 auto; }
+  .pending-actions .mini { padding:6px 10px; font-size:12px; white-space:nowrap; }
+
   /* --- 花田歷史 (PIN) tab: shown only when no console identity is configured,
          see updateTabVisibility() — reuses the 歷史-tab's .hist-* rules below
          (identical row/badge/checkbox look for both), plus this list-only header. --- */
@@ -300,7 +313,7 @@
 
   /* dark-mode hairline for the row-lets introduced further up (device/hist/coll) */
   @media (prefers-color-scheme: dark) {
-    .device-row, .hist-row, .coll-row { border-color:hsla(0,0%,100%,.06); }
+    .device-row, .hist-row, .coll-row, .pending-row { border-color:hsla(0,0%,100%,.06); }
   }
 </style>
 </head>
@@ -332,8 +345,9 @@
         <label>花名 + 顏色（選填，會標在花田紀錄上）</label>
         <div class="fp-row">
           <select id="colour"></select>
-          <select id="flower"></select>
+          <select id="flower" onchange="onFlowerSelectChange()"></select>
         </div>
+        <input id="flowerCustom" class="hide" placeholder="輸入自訂花名" maxlength="30" autocomplete="off">
         <label>貼上座標 / GPX / GeoJSON</label>
         <textarea id="raw" placeholder="25.0330, 121.5654&#10;25.0340, 121.5660&#10;…"></textarea>
         <div class="raw-tools">
@@ -343,12 +357,28 @@
         <button class="act parse" onclick="doParse()">🔍 解析並預覽</button>
         <div id="parseStatus" class="status mut"></div>
         <div id="sendMap"></div>
-        <button id="sendBtn" class="act send" disabled onclick="doSend()">送出到 flyman</button>
+        <button id="sendBtn" class="act send" disabled onclick="doSend()">加到路線佇列</button>
+        <button id="parkBtn" class="act parse" disabled onclick="doPark()">⏳ 存到待定路線</button>
         <div id="sendStatus" class="status"></div>
-        <div class="hint">送出後 Mac 上的 flyman 會在約 10 秒內把路線加入佇列（逐一走完一圈）。</div>
+        <div class="hint">送出後 Mac 上的 flyman 會在約 10 秒內把路線加入佇列（逐一走完一圈）；存到待定路線則先不會加入佇列，1 小時內有效。</div>
         <button class="act stop" onclick="doStop()">🛑 停止目前路線（恢復真實 GPS）</button>
         <div id="stopStatus" class="status"></div>
         <div class="hint">停止會取消整個佇列並讓手機恢復真實定位。</div>
+      </div>
+
+      <!-- ============ ⏳ 待定路線 — Jerry 拍照辨識常出錯的路線，先存起來讓 Zen
+           確認地點日期正確後再「加入佇列」。Loads on tab entry + the refresh
+           button only — NEVER on the 1.5s poll path (that's the console tabs'
+           doPull/renderAll loop, a completely different credential world). ============ -->
+      <div class="card">
+        <div class="hist-head">
+          <label style="margin:0">⏳ 待定路線</label>
+          <button type="button" class="mini" onclick="loadPending()">↻ 重新整理</button>
+        </div>
+        <div id="pendingStatus" class="status mut"></div>
+        <div id="pendingList"></div>
+        <div id="pendingMap"></div>
+        <div class="hint">兩人共用 — 任何人存的待定路線都會顯示在這裡；「加入佇列」後才會真的送到 Mac。</div>
       </div>
     </div>
 
@@ -676,6 +706,8 @@ function reasonText(reason) {
     no_notes: "Mac 端尚未支援留言功能",
     bad_text: "留言格式不正確",
     text_too_long: "留言過長，請縮短後再試",
+    not_found: "找不到這筆待定路線（可能已被處理，或已超過 24 小時）",
+    bad_status: "狀態不正確",
   };
   return map[reason] || ("失敗：" + reason);
 }
@@ -760,6 +792,10 @@ function showTab(which) {
   if (which === "send" && sendMap) setTimeout(() => sendMap.invalidateSize(), 50);
   if (which === "route" && map) setTimeout(() => map.invalidateSize(), 60);
   if (which === "hist") loadHistory();
+  // R6/scope fence: 待定路線 loads on tab entry + its own refresh button ONLY —
+  // never on the 1.5s console poll loop (doPull/renderAll), a different
+  // credential world entirely (see the PIN-vs-console-identity split above).
+  if (which === "send") loadPending();
   renderConsoleGate();
 }
 
@@ -817,6 +853,7 @@ function clearRaw() {
   $("raw").value = "";
   parsedPts = null;
   $("sendBtn").disabled = true;
+  $("parkBtn").disabled = true;
   $("sendMap").style.display = "none";
   $("parseStatus").textContent = "";
   // Note: no .focus() here — avoids popping the iOS keyboard unexpectedly after clear.
@@ -868,7 +905,7 @@ function doParse() {
   const pts = parseRoute(rawText);
   const ps = $("parseStatus");
   if (pts.length < 2) {
-    parsedPts = null; $("sendBtn").disabled = true; $("sendMap").style.display = "none";
+    parsedPts = null; $("sendBtn").disabled = true; $("parkBtn").disabled = true; $("sendMap").style.display = "none";
     ps.textContent = pts.length === 1 ? "只解析到 1 個點，至少需要 2 個" : "❌ 找不到有效座標";
     ps.className = "status err";
     return;
@@ -886,6 +923,7 @@ function doParse() {
   ]).addTo(sendMap);
   setTimeout(() => { sendMap.invalidateSize(); sendMap.fitBounds(L.polyline(pts).getBounds(), { padding: [24, 24] }); }, 60);
   $("sendBtn").disabled = false;
+  $("parkBtn").disabled = false;
 }
 
 async function doSend() {
@@ -893,7 +931,7 @@ async function doSend() {
   const s = $("sendStatus");
   if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入使用者名稱 / PIN"; s.className = "status err"; return; }
   if (!parsedPts) { s.textContent = "請先解析路線"; s.className = "status err"; return; }
-  const flower = $("flower").value, colour = $("colour").value;
+  const flower = getFlowerValue(), colour = $("colour").value;
   const name = flower ? ((COLOR_LABEL[colour] || "") + flower) : "手機路線";
   const btn = $("sendBtn"); btn.disabled = true;
   s.textContent = "送出中…"; s.className = "status mut";
@@ -904,6 +942,36 @@ async function doSend() {
     });
     if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = "✅ 已送出，Mac 上的 flyman 約 10 秒內會加入佇列"; s.className = "status ok";
+    pushFlowerMru(flower); fillPalette();  // ADR-033: MRU bubble-up
+    setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+    btn.disabled = false;
+  }
+}
+
+// 待定路線 (route pending, R2a): same guards/RPC as doSend, but p_status:'pending'
+// parks the row instead of putting it straight in the Mac's queue — Jerry's
+// photographed-GPS-list OCR is often wrong, so he parks it here and Zen
+// reviews/promotes it later (see doPendingPromote below). NO p_status on
+// doSend above — that back-compat default ('apply') is exactly what's
+// exercised there.
+async function doPark() {
+  const { url, key, pin, user } = cfg();
+  const s = $("sendStatus");
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入使用者名稱 / PIN"; s.className = "status err"; return; }
+  if (!parsedPts) { s.textContent = "請先解析路線"; s.className = "status err"; return; }
+  const flower = getFlowerValue(), colour = $("colour").value;
+  const name = flower ? ((COLOR_LABEL[colour] || "") + flower) : "手機路線";
+  const btn = $("parkBtn"); btn.disabled = true;
+  s.textContent = "存到待定路線中…"; s.className = "status mut";
+  try {
+    const data = await rpc("flyman_route_inbox_submit", {
+      p_username: user, p_secret: pin, p_kind: "route", p_raw_text: rawText,
+      p_name: name, p_flower: flower, p_colour: colour, p_status: "pending",
+    });
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
+    s.textContent = "已存到待定路線，1 小時內有效"; s.className = "status ok";
     pushFlowerMru(flower); fillPalette();  // ADR-033: MRU bubble-up
     setTimeout(() => { btn.disabled = false; }, 5000);  // debounce double-submit
   } catch (err) {
@@ -1031,6 +1099,139 @@ async function doGoto(i) {
     });
     if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
     s.textContent = `✅ 已送出，約 10 秒內傳送到「${r.name || "花田"}」`; s.className = "status ok";
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 待定路線 (route pending, R2b/R2c) — Jerry parks an OCR'd-from-a-photo route
+// with doPark() above instead of sending it straight to the queue; this list
+// shows EVERY user's pending rows (cross-user is the feature — Zen reviews
+// what Jerry parked, and vice versa) so either of them can check the route's
+// LOCAL date against their own before promoting it into the real queue.
+// Same PIN-world transport/credential as the rest of this file ({pin, user},
+// never {consoleUser, consolePin}) — see cfg()'s invariant comment up top.
+// ---------------------------------------------------------------------------
+let _pendingRows = [];
+let pendingMap = null, pendingLayer = null;
+const PENDING_EXPIRY_MS = 60 * 60 * 1000; // R6: visual-only 1h staleness hint (SQL's 24h window is separate housekeeping, not policy)
+
+// R7 — a solar-offset GUESS at the calendar date a longitude sits in, not a
+// twin of the IANA zone table (that's what ADR-058 actually forbade): a
+// calendar-date check only needs a rough UTC offset, not DST/politics. Exact
+// for Phoenix (UTC-7) and Taipei (UTC+8) — both DST-free — approximate near a
+// day boundary elsewhere.
+function routeLocalDate(lng, nowMs) {
+  const d = new Date(nowMs + Math.round(lng / 15) * 3600e3);
+  return [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+}
+
+function relativeAge(createdAtIso) {
+  const min = Math.floor((Date.now() - new Date(createdAtIso).getTime()) / 60000);
+  if (min < 1) return "剛剛";
+  if (min < 60) return min + " 分鐘前";
+  return Math.floor(min / 60) + " 小時前";
+}
+
+// Compares the route's first point's local calendar date (R7 guess) against
+// THIS phone's own local calendar date (the device's real timezone, no
+// offset guessing needed for that half). Empty string when raw_text has no
+// parseable point at all — pendingRowHtml then just omits the line.
+function pendingDateLine(r) {
+  const pts = parseRoute(r.raw_text || "");
+  if (!pts.length) return "";
+  const remote = routeLocalDate(pts[0][1], Date.now());
+  const now = new Date();
+  const local = [now.getFullYear(), now.getMonth() + 1, now.getDate()];
+  const sameDay = remote[0] === local[0] && remote[1] === local[1] && remote[2] === local[2];
+  const label = `${remote[1]}/${remote[2]}`;
+  return sameDay ? `當地日期 ${label} · 同一天` : `當地日期 ${label} · 與你不同日 ⚠️`;
+}
+
+function pendingRowHtml(r, i) {
+  const colour = COLOR_LABEL[r.colour] || "";
+  const tag = (r.flower || colour) ? `<span class="hist-badge">${esc(colour + (r.flower || ""))}</span>` : "";
+  const expired = (Date.now() - new Date(r.created_at).getTime()) > PENDING_EXPIRY_MS;
+  const expiredBadge = expired ? `<span class="pending-expired">已過期</span>` : "";
+  const dateLine = pendingDateLine(r);
+  return `<div class="pending-row">`
+    + `<div class="pending-info">`
+    + `<div class="pending-name">${esc(r.name || "待定路線")}${tag}</div>`
+    + `<div class="pending-meta">由 ${esc(actorLabel(r.username))} 提交 · ${esc(relativeAge(r.created_at))}${expiredBadge}</div>`
+    + (dateLine ? `<div class="pending-date">${esc(dateLine)}</div>` : "")
+    + `</div>`
+    + `<div class="pending-actions">`
+    + `<button type="button" class="mini" onclick="doPendingPreview(${i})">預覽</button>`
+    + `<button type="button" class="mini goto" onclick="doPendingPromote(${i})">加入佇列</button>`
+    + `</div></div>`;
+}
+
+async function loadPending() {
+  const { url, key, pin, user } = cfg();
+  const s = $("pendingStatus"), list = $("pendingList");
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入使用者名稱 / PIN"; s.className = "status err"; list.innerHTML = ""; return; }
+  s.textContent = "載入中…"; s.className = "status mut";
+  try {
+    const data = await rpc("flyman_route_pending_pull", { p_username: user, p_secret: pin });
+    if (!data || data.ok !== true) {
+      s.textContent = "❌ 驗證失敗：代碼不正確，或剛才錯太多次被暫時鎖定，請確認後稍待幾分鐘再試";
+      s.className = "status err"; list.innerHTML = ""; return;
+    }
+    _pendingRows = Array.isArray(data.rows) ? data.rows : [];
+    if (!_pendingRows.length) {
+      s.textContent = "尚無待定路線"; s.className = "status mut"; list.innerHTML = ""; return;
+    }
+    s.textContent = ""; s.className = "status mut";
+    list.innerHTML = _pendingRows.map((r, i) => pendingRowHtml(r, i)).join("");
+  } catch (err) {
+    s.textContent = "❌ " + err.message; s.className = "status err";
+  }
+}
+
+// 預覽 renders into the ONE shared #pendingMap below the list — deliberately
+// NOT into the #raw draft textarea (which doParse()/doSend()/doPark() read
+// from): loading a pending row's raw_text in there would turn "promote" into
+// "resubmit as a brand-new row" and clobber whatever the user is mid-drafting.
+function doPendingPreview(i) {
+  const r = _pendingRows[i];
+  if (!r) return;
+  const s = $("pendingStatus");
+  const pts = parseRoute(r.raw_text || "");
+  if (!pts.length) { s.textContent = "❌ 這筆待定路線沒有可解析的座標"; s.className = "status err"; return; }
+  const mapEl = $("pendingMap");
+  mapEl.style.display = "block";
+  if (!pendingMap) pendingMap = L.map("pendingMap", { attributionControl: false }).setView(pts[0], 15);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(pendingMap);
+  if (pendingLayer) pendingMap.removeLayer(pendingLayer);
+  pendingLayer = L.layerGroup([
+    L.polyline(pts, { color: "#2f7bff", weight: 4 }),
+    L.circleMarker(pts[0], { radius: 6, color: "#2fbf6b" }),
+    L.circleMarker(pts[pts.length - 1], { radius: 6, color: "#e5484d" }),
+  ]).addTo(pendingMap);
+  setTimeout(() => { pendingMap.invalidateSize(); pendingMap.fitBounds(L.polyline(pts).getBounds(), { padding: [24, 24] }); }, 60);
+}
+
+// R2c/R6: promote = flip status 'pending' -> 'apply' server-side; p_status is
+// NEVER sent from here — promoted_by is stamped INSIDE the RPC from the
+// caller's own verified {user,pin}, never a client field (ADR-053). Past the
+// 1h mark this is a confirm(), never a hard block — the 24h SQL window is the
+// only real cutoff, and that one is enforced server-side regardless.
+async function doPendingPromote(i) {
+  const r = _pendingRows[i];
+  if (!r) return;
+  const expired = (Date.now() - new Date(r.created_at).getTime()) > PENDING_EXPIRY_MS;
+  if (expired && !confirm("這條路線已超過 1 小時，仍要加入佇列？")) return;
+  const { url, key, pin, user } = cfg();
+  const s = $("pendingStatus");
+  if (!url || !key || !pin || !user) { s.textContent = "請先到「⚙ 設定」填入設定"; s.className = "status err"; return; }
+  s.textContent = "加入佇列中…"; s.className = "status mut";
+  try {
+    const data = await rpc("flyman_route_pending_promote", { p_username: user, p_secret: pin, p_id: r.id });
+    if (!data || data.ok !== true) throw new Error(reasonText(data && data.reason));
+    pushFlowerMru(r.flower); fillPalette();  // R5: the other user's coined flower name enters your list through actual use
+    await loadPending();  // MUST be awaited: it rewrites #pendingStatus too, so a fire-and-forget call here would race and clobber the success message below with loadPending's own "載入中…"
+    s.textContent = "✅ 已加入佇列，Mac 上的 flyman 約 10 秒內會處理"; s.className = "status ok";
   } catch (err) {
     s.textContent = "❌ " + err.message; s.className = "status err";
   }
@@ -1185,15 +1386,43 @@ function pushFlowerMru(name) { if (!name) return; const m = [name, ...flowerMru(
 // the pre-merge index.html did, so an untouched colour select still submits the
 // same default colour it always did. Filter the blank entry out here rather
 // than removing it from COLOURS itself (retagPanelHtml() still needs it).
+// R5: flower_palette stays anon READ-ONLY (no write RPC — ADR-051 closed
+// those holes and a PIN-gated write to a shared singleton config isn't worth
+// it for a convenience list). Instead the 送出路線 tab gets a "＋自訂花名…"
+// escape hatch (see getFlowerValue/onFlowerSelectChange below) whose typed
+// value is pushed into the LOCAL MRU on submit — so it shows up as a real
+// option next time on THIS device, and on the other user's device the moment
+// they promote/see a row carrying it (pushFlowerMru in doSend/doPark/
+// doPendingPromote). The MRU filter below was `mru.filter(f => real.includes
+// (f))` — that silently dropped any name not already in the baked-in/synced
+// palette, which is exactly the custom names this feature needs to keep. Now
+// a UNION: every MRU entry is kept (real palette entries not already in MRU
+// are appended after).
 function fillPalette() {
   const colourSel = $("colour"), flowerSel = $("flower");
   if (!colourSel || !flowerSel) return;
   const sendColours = COLOURS.filter(([k]) => k !== "");
   colourSel.innerHTML = sendColours.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
   const real = FLOWERS.filter((f) => f);
-  const mru = flowerMru().filter((f) => real.includes(f));
+  const mru = flowerMru();
   const ordered = [""].concat(mru, real.filter((f) => !mru.includes(f)));
-  flowerSel.innerHTML = ordered.map((f) => `<option value="${esc(f)}">${f ? esc(f) : "（不設定花名）"}</option>`).join("");
+  flowerSel.innerHTML = ordered.map((f) => `<option value="${esc(f)}">${f ? esc(f) : "（不設定花名）"}</option>`).join("")
+    + `<option value="__custom__">＋自訂花名…</option>`;
+  $("flowerCustom").classList.add("hide");
+}
+
+// Reads the 花名 <select>'s effective value for submission — the raw select
+// value, UNLESS "＋自訂花名…" is picked, in which case it's the typed text in
+// the reveal-on-demand #flowerCustom input instead.
+function getFlowerValue() {
+  const sel = $("flower");
+  if (sel.value === "__custom__") return $("flowerCustom").value.trim();
+  return sel.value;
+}
+function onFlowerSelectChange() {
+  const custom = $("flowerCustom");
+  if ($("flower").value === "__custom__") { custom.classList.remove("hide"); custom.value = ""; custom.focus(); }
+  else { custom.classList.add("hide"); }
 }
 
 async function loadPalette() {
