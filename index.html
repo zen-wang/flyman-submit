@@ -1163,6 +1163,7 @@ function pendingRowHtml(r, i) {
     + `</div>`
     + `<div class="pending-actions">`
     + `<button type="button" class="mini" onclick="doPendingPreview(${i})">預覽</button>`
+    + `<button type="button" class="mini" onclick="doPendingCopy(${i}, this)">📋 複製</button>`
     + `<button type="button" class="mini goto" onclick="doPendingPromote(${i})">加入佇列</button>`
     + `</div></div>`;
 }
@@ -1193,6 +1194,33 @@ async function loadPending() {
 // NOT into the #raw draft textarea (which doParse()/doSend()/doPark() read
 // from): loading a pending row's raw_text in there would turn "promote" into
 // "resubmit as a brand-new row" and clobber whatever the user is mid-drafting.
+// Copy a pending route's RAW pasted text (not the parsed points) so the other
+// person gets back exactly what was submitted — the whole point of parking a
+// route here is that the phone's OCR mangled the original list, so a
+// re-normalised copy would defeat the purpose. Reuses copyTextToClipboard's
+// insecure-context fallback: this page is often opened over a LAN IP, where
+// navigator.clipboard is unavailable.
+async function doPendingCopy(i, btn) {
+  const r = _pendingRows[i];
+  if (!r) return;
+  const text = (r.raw_text || "").trim();
+  if (!text) {
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = "❌ 沒有內容";
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+    }
+    return;
+  }
+  const ok = await copyTextToClipboard(text);
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.textContent = ok ? "✅ 已複製" : "❌ 複製失敗";
+  btn.disabled = true;
+  setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+}
+
 function doPendingPreview(i) {
   const r = _pendingRows[i];
   if (!r) return;
